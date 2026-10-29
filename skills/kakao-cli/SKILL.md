@@ -1,6 +1,6 @@
 ---
 name: kakao-cli
-description: 카카오톡을 CLI로 백그라운드 조회·검색·전송하고 사진·파일을 받아 분석한다. Windows 닫힌 대화방 자동 검색과 macOS 어댑터, Ubuntu Wine 서버 버전를 제공한다.
+description: 카카오톡을 CLI로 백그라운드 조회·검색·전송하고 사진·파일을 받아 분석한다. Windows 닫힌 대화방 자동 검색과 macOS 어댑터, Ubuntu Wine 서버 버전을 제공한다.
 ---
 
 # 카카오톡 CLI
@@ -69,7 +69,7 @@ OCR·제목 검증이 실패하면 임의 선택하지 말고 반환된 후보�
 ## 다른 운영체제
 
 - macOS: 저장소 `macos/README.md`와 `macos/kakao`를 사용한다. AX 어댑터이며 실제 Mac 호환성은 미검증이다. 열린 방 조회·명시적 전송·기존 저장창 처리를 제공한다. Windows 닫힌 방 검색·무팝업 저장과 동등하다고 주장하지 않는다.
-- Ubuntu/Linux 서버: `linux/README.md`와 `linux/kakao.py`를 사용한다. 서버 내부 Wine과 전용 Xvfb 가상 화면에서 카카오톡 자체를 실행한다. 외부 Windows PC나 SSH가 필요하지 않다. 최초 로그인은 서버의 가상 화면에서 사용자가 인증해야 한다. Wine 호환성과 실제 로그인 검증 여부를 확인하고 완료 범위를 과장하지 않는다.
+- Ubuntu/Linux 서버: `linux/README.md`와 `linux/kakao.py`를 사용한다. 서버 내부 Wine 11 이상과 전용 Xvfb 가상 화면에서 카카오톡 자체를 실행한다. Microsoft 공식 Visual C++ 런타임과 KakaoTalk.exe별 CRT override를 설치기가 준비한다. 외부 Windows PC나 SSH가 필요하지 않다. Ubuntu 24.04.5에서 초기 약관 화면만 실검증했으며 최초 로그인은 서버의 가상 화면에서 사용자가 인증해야 한다. `doctor`의 `ready_for_chats`와 `login_state`를 확인하고 앱 창 감지를 계정 로그인·실제 조회·전송 검증으로 과장하지 않는다.
 
 데이터는 `D:\Codex\apps\kakao-cli`, 임시는 `D:\Codex\tmp`를 사용한다.
 개인 대화·캡처·첨부·연락처를 공개 저장소에 올리지 않는다. DB 고급 명령은 별도 검증 키가 필요하며

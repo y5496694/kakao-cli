@@ -7,7 +7,8 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 prefix=${KAKAOCLI_WINEPREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/kakao-cli/wine}
 state=${KAKAOCLI_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/kakao-cli}
 display=${KAKAOCLI_DISPLAY:-:93}
-installer='' python_installer='' password_file='' install_system=0 enable_service=0
+wine_cmd=${KAKAOCLI_WINE:-wine}
+installer='' python_installer='' vc_runtime='' password_file='' install_system=0 enable_service=0
 installer_arguments=()
 
 usage() {
@@ -16,10 +17,12 @@ Usage: bash linux/install.sh [options]
   --installer PATH             Official local KakaoTalk Windows installer
   --installer-arg VALUE        Explicit installer argument; may be repeated
   --python-installer PATH      Local Python 3.11.9 x64 installer (otherwise python.org)
+  --vc-runtime PATH            Local official VC++ x64 redistributable (otherwise Microsoft)
   --vnc-password-file PATH     Existing x11vnc password file (chmod 600), localhost only
   --prefix PATH               Dedicated Wine prefix
-  --install-system            Explicitly install Ubuntu dependencies, including i386 Wine
+  --install-system            Explicitly add WineHQ stable 11+ and Ubuntu dependencies
   --enable-service            Enable and start the systemd user service after installation
+  KAKAOCLI_WINE               Selected Wine executable, including a custom Wine installation
 
 Without explicit unattended installer arguments, Kakao setup requires the
 authenticated optional VNC view to complete its GUI inside the private desktop.
@@ -27,11 +30,36 @@ Python 3.11.9 is the last 3.11 Windows binary installer, not the latest security
 HELP
 }
 
+require_wine11() {
+  if [[ $1 =~ ^wine-([0-9]+)([.~-]|$) ]] && ((BASH_REMATCH[1] >= 11)); then
+    return 0
+  fi
+  printf 'Wine 11 or newer is required; Ubuntu Wine 9 is incompatible. Select KAKAOCLI_WINE or use --install-system for WineHQ stable.\n' >&2
+  return 1
+}
+
+vc_install_succeeded() {
+  # Unix process statuses may expose Windows 3010 (restart required) as 194.
+  case "$1" in 0|194|3010) return 0 ;; *) return 1 ;; esac
+}
+
+configure_system_command() {
+  system_command=()
+  if (($1 != 0)); then
+    if ! command -v sudo >/dev/null; then
+      printf 'System installation requires root or an available sudo command.\n' >&2
+      return 1
+    fi
+    system_command=(sudo)
+  fi
+}
+
 while (($#)); do
   case "$1" in
     --installer) installer=${2:?Missing installer path}; shift 2 ;;
     --installer-arg) installer_arguments+=("${2:?Missing installer argument}"); shift 2 ;;
     --python-installer) python_installer=${2:?Missing Python installer path}; shift 2 ;;
+    --vc-runtime) vc_runtime=${2:?Missing VC++ redistributable path}; shift 2 ;;
     --vnc-password-file) password_file=${2:?Missing password file}; shift 2 ;;
     --prefix) prefix=${2:?Missing Wine prefix}; shift 2 ;;
     --install-system) install_system=1; shift ;;
@@ -44,13 +72,46 @@ done
 [[ $(uname -s) == Linux ]] || { printf 'This installer requires Ubuntu/Linux.\n' >&2; exit 1; }
 [[ $display =~ ^:[1-9][0-9]*$ ]] || { printf 'Use a private DISPLAY such as :93.\n' >&2; exit 1; }
 if ((install_system)); then
-  sudo dpkg --add-architecture i386
-  sudo apt-get update
-  sudo apt-get install -y wine64 wine32:i386 xvfb openbox xauth x11vnc scrot curl python3 python3-venv tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng fonts-nanum
+  configure_system_command "$EUID"
+  source /etc/os-release
+  if [[ ${ID:-} != ubuntu || ! ${VERSION_CODENAME:-} =~ ^(noble|jammy)$ || $(dpkg --print-architecture) != amd64 ]]; then
+    printf 'WineHQ installation supports Ubuntu amd64 noble or jammy only.\n' >&2
+    exit 1
+  fi
+  "${system_command[@]}" dpkg --add-architecture i386
+  "${system_command[@]}" apt-get update
+  "${system_command[@]}" apt-get install -y ca-certificates xvfb openbox xauth x11-utils x11vnc scrot curl python3 python3-venv tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng fonts-nanum
+  if [[ -z ${KAKAOCLI_WINE:-} ]]; then
+    repo_stage=$(mktemp -d)
+    if ! curl --fail --location --proto '=https' --tlsv1.2 --output "$repo_stage/winehq.key" https://dl.winehq.org/wine-builds/winehq.key ||
+       ! curl --fail --location --proto '=https' --tlsv1.2 --output "$repo_stage/winehq.sources" "https://dl.winehq.org/wine-builds/ubuntu/dists/$VERSION_CODENAME/winehq-$VERSION_CODENAME.sources"; then
+      rm -f -- "$repo_stage/winehq.key" "$repo_stage/winehq.sources"
+      rmdir -- "$repo_stage"
+      printf 'Official WineHQ repository metadata download failed.\n' >&2
+      exit 1
+    fi
+    "${system_command[@]}" mkdir -p /etc/apt/keyrings
+    "${system_command[@]}" install -m 644 "$repo_stage/winehq.key" /etc/apt/keyrings/winehq-archive.key
+    "${system_command[@]}" install -m 644 "$repo_stage/winehq.sources" "/etc/apt/sources.list.d/winehq-$VERSION_CODENAME.sources"
+    rm -f -- "$repo_stage/winehq.key" "$repo_stage/winehq.sources"
+    rmdir -- "$repo_stage"
+    "${system_command[@]}" apt-get update
+    "${system_command[@]}" apt-get install -y --install-recommends winehq-stable
+  fi
 fi
-for program in wine wineboot Xvfb openbox xauth python3 curl timeout; do
+for program in "$wine_cmd" Xvfb openbox xauth xdpyinfo python3 curl timeout; do
   command -v "$program" >/dev/null || { printf 'Missing %s; review --install-system.\n' "$program" >&2; exit 1; }
 done
+wine_executable=$(command -v -- "$wine_cmd")
+wine_version=$("$wine_cmd" --version) || { printf 'Could not determine selected Wine version.\n' >&2; exit 1; }
+require_wine11 "$wine_version"
+wine_server="$(dirname -- "$wine_executable")/wineserver"
+if [[ ! -x $wine_server ]]; then
+  wine_server="$(dirname -- "$(realpath -- "$wine_executable")")/wineserver"
+fi
+if [[ ! -x $wine_server ]]; then
+  wine_server=$(command -v wineserver || true)
+fi
 prefix=$(realpath -m -- "$prefix")
 state=$(realpath -m -- "$state")
 for directory in "$prefix" "$state"; do
@@ -110,9 +171,9 @@ stop_owned() {
 }
 cleanup() {
   stop_owned "$vpid" "$vstart"
-  if command -v wineserver >/dev/null; then
-    WINEPREFIX="$prefix" timeout 10 wineserver -k 2>/dev/null || true
-    WINEPREFIX="$prefix" timeout 15 wineserver -w 2>/dev/null || printf 'Dedicated Wine prefix did not finish shutdown within 15 seconds.\n' >&2
+  if [[ -n $wine_server && -x $wine_server ]]; then
+    WINEPREFIX="$prefix" timeout 10 "$wine_server" -k 2>/dev/null || true
+    WINEPREFIX="$prefix" timeout 15 "$wine_server" -w 2>/dev/null || printf 'Dedicated Wine prefix did not finish shutdown within 15 seconds.\n' >&2
   fi
   stop_owned "$opid" "$ostart"
   stop_owned "$xpid" "$xstart"
@@ -121,11 +182,11 @@ trap cleanup EXIT INT TERM
 Xvfb "$display" -screen 0 1280x960x24 -nolisten tcp -auth "$XAUTHORITY" >"$state/install-xvfb.log" 2>&1 & xpid=$!
 xstart=$(process_start "$xpid")
 for _ in {1..100}; do
-  [[ ! -e /tmp/.X11-unix/X$number ]] || break
+  if xdpyinfo -display "$display" >/dev/null 2>&1; then break; fi
   kill -0 "$xpid" 2>/dev/null || { printf 'Xvfb exited; inspect install-xvfb.log.\n' >&2; exit 1; }
   sleep .1
 done
-[[ -e /tmp/.X11-unix/X$number ]] || { printf 'Xvfb readiness timed out.\n' >&2; exit 1; }
+xdpyinfo -display "$display" >/dev/null 2>&1 || { printf 'Xvfb readiness timed out.\n' >&2; exit 1; }
 openbox --sm-disable >"$state/install-openbox.log" 2>&1 & opid=$!
 ostart=$(process_start "$opid")
 if [[ -n $password_file ]]; then
@@ -133,7 +194,30 @@ if [[ -n $password_file ]]; then
   vstart=$(process_start "$vpid")
   printf 'Setup view: 127.0.0.1:5903 (password required).\n'
 fi
-timeout 120 wineboot -u
+if ! WINEDLLOVERRIDES='mscoree,mshtml=' timeout 120 "$wine_cmd" wineboot.exe -u >"$state/install-wineboot.log" 2>&1; then
+  printf 'Headless Wine initialization failed; inspect install-wineboot.log.\n' >&2
+  exit 1
+fi
+if [[ -z $vc_runtime ]]; then
+  vc_runtime="$state/vc_redist.x64.exe"
+  if [[ ! -f $vc_runtime ]]; then
+    curl --fail --location --proto '=https' --tlsv1.2 --output "$vc_runtime.part" https://aka.ms/vc14/vc_redist.x64.exe
+    mv -- "$vc_runtime.part" "$vc_runtime"
+  fi
+fi
+[[ -f $vc_runtime ]] || { printf 'VC++ redistributable must be an existing local official installer.\n' >&2; exit 1; }
+vc_status=0
+timeout 300 "$wine_cmd" "$vc_runtime" /install /quiet /norestart >"$state/install-vc-runtime.log" 2>&1 || vc_status=$?
+if ! vc_install_succeeded "$vc_status"; then
+  printf 'VC++ runtime installation failed with status %s; inspect install-vc-runtime.log.\n' "$vc_status" >&2
+  exit 1
+fi
+if ((vc_status != 0)); then
+  printf 'VC++ installer reported restart-required success (%s; Windows 3010 may appear as Unix 194).\n' "$vc_status"
+fi
+for dll in msvcp140 msvcp140_1 msvcp140_2 vcruntime140 vcruntime140_1 concrt140; do
+  timeout 30 "$wine_cmd" reg.exe add 'HKCU\Software\Wine\AppDefaults\KakaoTalk.exe\DllOverrides' /v "$dll" /t REG_SZ /d native,builtin /f >"$state/install-crt-overrides.log" 2>&1
+done
 if [[ -z $python_installer ]]; then
   python_installer="$state/python-3.11.9-amd64.exe"
   if [[ ! -f $python_installer ]]; then
@@ -143,14 +227,14 @@ if [[ -z $python_installer ]]; then
 fi
 [[ -f $python_installer ]] || { printf 'Python installer file is missing.\n' >&2; exit 1; }
 if [[ ! -f $prefix/drive_c/Python311/python.exe ]]; then
-  timeout 300 wine "$python_installer" /quiet InstallAllUsers=0 'TargetDir=C:\Python311' Include_launcher=0 Include_test=0 PrependPath=0
+  timeout 300 "$wine_cmd" "$python_installer" /quiet InstallAllUsers=0 'TargetDir=C:\Python311' Include_launcher=0 Include_test=0 PrependPath=0
 fi
-wine 'C:\Python311\python.exe' -m pip install --disable-pip-version-check 'pywin32>=306' 'Pillow>=10'
+"$wine_cmd" 'C:\Python311\python.exe' -m pip install --disable-pip-version-check 'pywin32>=306' 'Pillow>=10'
 repo_windows="Z:${repo//\//\\}"
-wine 'C:\Python311\python.exe' -m pip install --no-deps "$repo_windows"
+"$wine_cmd" 'C:\Python311\python.exe' -m pip install --no-deps "$repo_windows"
 if [[ -n $installer ]]; then
   printf 'Complete official Kakao setup inside the isolated desktop if prompted.\n'
-  wine "$installer" "${installer_arguments[@]}"
+  "$wine_cmd" "$installer" "${installer_arguments[@]}"
 fi
 python3 -m venv "$repo/.venv-linux"
 "$repo/.venv-linux/bin/python" -m pip install -r "$repo/linux/requirements-analysis.txt"
@@ -162,10 +246,10 @@ if [[ -e $launcher ]] && ! grep -q 'kakao-cli local Wine launcher' "$launcher"; 
 fi
 printf '#!/usr/bin/env bash\n# kakao-cli local Wine launcher\nset -a\nsource "$HOME/.config/kakao-cli/runtime.env"\nset +a\nexec %q %q "$@"\n' "$repo/.venv-linux/bin/python" "$repo/linux/kakao.py" >"$launcher"
 chmod 755 "$launcher"
-python3 - "$HOME/.config/kakao-cli/runtime.env" "$prefix" "$state" "$display" <<'PY'
+python3 - "$HOME/.config/kakao-cli/runtime.env" "$prefix" "$state" "$display" "$wine_executable" <<'PY'
 import os, pathlib, shlex, sys
 p = pathlib.Path(sys.argv[1])
-p.write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in zip(('KAKAOCLI_WINEPREFIX','KAKAOCLI_STATE_DIR','KAKAOCLI_DISPLAY'),sys.argv[2:])),encoding='utf-8')
+p.write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in zip(('KAKAOCLI_WINEPREFIX','KAKAOCLI_STATE_DIR','KAKAOCLI_DISPLAY','KAKAOCLI_WINE'),sys.argv[2:])),encoding='utf-8')
 p.chmod(0o600)
 PY
 cp -- "$repo/linux/kakao-cli.service" "$HOME/.config/systemd/user/kakao-cli.service"

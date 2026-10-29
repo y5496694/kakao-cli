@@ -152,6 +152,28 @@ class Runtime:
                 return str(path)
         raise RuntimeError("KakaoTalk.exe is not installed in this Wine prefix. Run linux/install.sh first")
 
+    def _display_ready(self):
+        try:
+            result = subprocess.run(['xdpyinfo', '-display', self.config.display],
+                env=self.config.environment(), stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=2)
+            return result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    def _initialize_prefix(self):
+        # Bootstrap helpers may request Mono/Gecko downloads. Disable those
+        # components only during wineboot so headless startup cannot await a GUI.
+        environment = {**self.config.environment(), "WINEDLLOVERRIDES": "mscoree,mshtml="}
+        log_path = self.config.state / "wineboot.log"
+        try:
+            with log_path.open("ab") as log:
+                subprocess.run([self.config.wine, "wineboot.exe", "-u"], env=environment,
+                               stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                               check=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"Headless Wine prefix initialization failed; inspect {log_path}") from exc
+
     def start(self):
         with self._lock():
             state = self._read()
@@ -159,7 +181,7 @@ class Runtime:
                 return self.status()
             if any(self._alive(record) for record in state["processes"].values()):
                 raise RuntimeError("A partial runtime is still running; stop it before restarting")
-            for program in ("Xvfb", "openbox", "xauth", self.config.wine):
+            for program in ("Xvfb", "openbox", "xauth", "xdpyinfo", self.config.wine):
                 if not shutil.which(program):
                     raise RuntimeError(f"Missing runtime program: {program}")
             executable = self._kakao_executable()
@@ -180,11 +202,12 @@ class Runtime:
                 server = self._spawn("xvfb", ["Xvfb", self.config.display, "-screen", "0", "1280x960x24",
                                               "-nolisten", "tcp", "-auth", str(auth)], state)
                 deadline = time.monotonic() + 10
-                while not socket.exists():
+                while not self._display_ready():
                     if server.poll() is not None or time.monotonic() >= deadline:
                         raise RuntimeError("Xvfb did not become ready; inspect xvfb.log")
                     time.sleep(.1)
                 self._spawn("openbox", ["openbox", "--sm-disable"], state)
+                self._initialize_prefix()
                 self._spawn("kakao", [self.config.wine, executable], state)
             except BaseException:
                 self._stop(state)

@@ -267,6 +267,30 @@ def _read_message(args):
     return _string(message, "message")
 
 
+def _doctor(b):
+    result = b.doctor()
+    main = b.find_main_window()
+    chat_list_available = bool(main and any(
+        b.win32gui.GetWindowText(child).startswith("ChatRoomListView_")
+        and b.win32gui.IsWindowVisible(child)
+        for child in b.enum_children(main.hwnd)
+    ))
+    ready = bool(chat_list_available and b.win32gui.IsWindowEnabled(main.hwnd))
+    result.update(
+        runtime="wine", isolated_desktop=True,
+        chat_list_available=chat_list_available, ready_for_chats=ready,
+        login_state="chat_list_available" if chat_list_available else "setup_or_login_required",
+        server_authentication_verified=False,
+    )
+    if ready:
+        result["next"] = "채팅 목록 UI를 확인했습니다. 실제 대화 조회·전송은 별도로 검증해야 하며 서버 인증은 확정하지 않습니다."
+    elif chat_list_available:
+        result["next"] = "채팅 목록 UI는 있지만 앱 창이 현재 입력을 받을 수 없습니다. 격리된 Wine 화면의 대화상자를 먼저 확인하세요."
+    else:
+        result["next"] = "격리된 Wine 화면에서 카카오톡을 실행하고 초기 설정·이용약관·사용자 로그인을 완료하세요. 앱 창 감지만으로 로그인 성공을 뜻하지 않습니다."
+    return result
+
+
 def _command(request, b, a, cli, loaded_messages):
     arguments = request.get("argv")
     if not isinstance(arguments, list) or not arguments or len(arguments) > 256 or any(not isinstance(value, str) or "\0" in value for value in arguments):
@@ -279,7 +303,7 @@ def _command(request, b, a, cli, loaded_messages):
     if args.command not in ALLOWED_COMMANDS:
         raise AgentError("unsupported_command", "This Wine agent does not expose that root CLI command.")
     if args.command == "doctor":
-        return {**b.doctor(), "runtime": "wine", "isolated_desktop": True}
+        return _doctor(b)
     if args.command in {"windows", "rooms"}:
         return [window.to_dict() for window in (b.list_windows() if args.command == "windows" else b.list_rooms())]
     if args.command == "inspect":

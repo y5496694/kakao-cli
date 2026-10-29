@@ -60,6 +60,12 @@ REA로 확인한 PE의 `GetSaveFileNameW` 경계에서 선택한 저장 경로�
 
 ## 검증과 보관
 
+Ubuntu 24.04.5/WSL2를 별도로 준비해 공통 첨부 분석과 Linux 테스트 96개를 실제 Linux Python에서 통과했습니다. Wine 9.0 및 공식 WineHQ 11.0의 x64 실행기로 Windows Python 3.11.9·pywin32·Pillow와 Wine 에이전트 호출을 확인했습니다. 인증된 전용 Xvfb/Openbox 화면과 PNG 캡처도 확인했습니다. WSLg가 파일 시스템 소켓을 만들지 못해도 연결되는 경우가 있어, 가상 화면 준비 검사는 `xdpyinfo`의 실제 접속으로 바꿨습니다. Wine 첫 초기화의 Mono/Gecko 설치 팝업은 초기화 subprocess에서만 비활성화하고, 완료 후 앱을 시작합니다.
+
+카카오톡 26.9.0.5337/x64는 Wine 9에서 Themida의 `Wrong DLL present` 오류로 로그인 전에 막혔고, Wine 11만 적용한 새 prefix에서도 창이 확인되지 않았습니다. Wine 11에 네이티브 Visual C++ 14.50.35710.0의 `msvcp140`, `msvcp140_1`, `msvcp140_2`, `vcruntime140`, `vcruntime140_1`, `concrt140`을 적용한 뒤 **실제 카카오톡 초기 약관 화면이 렌더링되는 것을 확인했습니다.** 이 첫 확인은 비공개 테스트 앱 폴더의 DLL을 사용했으며, 배포 설치기는 Microsoft 공식 재배포 패키지와 앱별 DLL override로 해당 구성을 준비합니다. 원본 프로그램 파일은 Windows 원본과 해시·AMD64 구조가 일치함을 확인했고, 프로그램·계정 데이터를 공개 저장소에 배포하지 않습니다.
+
+초기 화면에서 실제 Wine 에이전트가 `ok=true`, `main_window_found=true`, `ready_for_chats=false`, `login_state=setup_or_login_required`를 반환하는 것도 확인했습니다. 약관 승인이나 계정 로그인·모바일 인증은 수행하지 않았으며, Linux에서 로그인 후 대화 조회·전송 성공을 주장하지 않습니다. 설치 스크립트 전체의 새 서버 설치와 다른 Wine·카카오톡 조합까지 검증한 것은 아닙니다.
+
 Windows에서는 백그라운드 대화 복사, 검색 결과의 전체 방 제목 검증, 저장창 없는 사진 원본 저장을 실제 앱으로 확인했습니다. macOS의 실제 앱 호환성과 Ubuntu Wine에서의 카카오 계정 로그인·전송은 아직 검증하지 않았습니다.
 
 `linux/`는 Ubuntu 서버 자체에서 카카오톡을 실행하는 Wine/Xvfb 어댑터입니다. 전용 prefix·가상 화면·Xauthority를 사용하고, Wine 안의 Windows Python 에이전트와 호스트 Python CLI가 로컬 JSON으로 통신합니다. 외부 Windows PC나 SSH 실행에 의존하지 않습니다. 에이전트는 실제 Wine의 `wine_get_version`과 격리 플래그를 모두 검사하며 네이티브 Windows에서 실행하면 앱 제어 전에 거부합니다.

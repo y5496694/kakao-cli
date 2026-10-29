@@ -1,12 +1,14 @@
 # Ubuntu 서버 자체 실행형 카카오톡 CLI
 
+**Ubuntu 24.04.5/WSL2에서 Wine 11과 네이티브 Visual C++ 런타임으로 카카오톡 26.9.0.5337의 실제 초기 약관 화면이 뜨는 것까지 확인했습니다. 계정 로그인·모바일 인증과 로그인 후 대화 조회·전송은 아직 실검증 전입니다.**
+
 서버 안에서 **Wine으로 카카오톡 자체를 실행**합니다. 전용 Xvfb 가상 화면을 사용하므로 물리 모니터, 외부 Windows PC, SSH 연결이 필요하지 않습니다. 조회·전송·사진/파일 저장·분석이 서버 내부에서 처리됩니다. Windows용 카카오톡을 실행하는 호환 방식이며 공식 Linux 카카오톡 앱이나 카카오 프로토콜을 새로 구현한 프로그램은 아닙니다.
 
 Windows에서 수행한 REA 분석의 컨트롤 선택자를 재사용합니다. Wine 어댑터는 Frida에 의존하지 않습니다. 전역 입력이 필요한 경우에도 전용 가상 화면 안에서만 사용합니다. 실제 Wine DLL과 격리 실행 플래그를 확인하지 못하면 에이전트가 앱을 조작하기 전에 중단합니다.
 
 ## 설치
 
-대상은 x86_64 Ubuntu 24.04 계열입니다. 저장소 전체와 Python 3.10 이상이 필요합니다. `linux/` 폴더만 복사하지 마세요. Windows 패키지를 Ubuntu의 Python에 설치하지 않습니다.
+자동 시스템 설치 대상은 x86_64 Ubuntu 22.04/24.04이며, 실제 앱 초기 화면은 24.04.5에서 검증했습니다. Wine 11 이상, 저장소 전체와 Python 3.10 이상이 필요합니다. `linux/` 폴더만 복사하지 마세요. Windows 패키지를 Ubuntu의 Python에 설치하지 않습니다.
 
 ```bash
 git clone https://github.com/y5496694/kakao-cli.git
@@ -14,7 +16,11 @@ cd kakao-cli
 bash linux/install.sh --install-system
 ```
 
-`--install-system`을 명시한 경우에만 sudo로 Wine/i386, Xvfb, Openbox, 한국어 Tesseract OCR, 글꼴과 선택적인 로그인 화면 도구를 설치합니다. 프로그램 데이터는 사용자 전용 Wine prefix와 상태 폴더에 보관합니다. Python의 Windows 실행 파일은 python.org에서 받아 Wine 안에 설치하며 배포 파일을 이 저장소에 포함하지 않습니다. 기본 Python 3.11.9는 마지막 3.11 Windows 설치 프로그램을 선택한 것이며 최신 보안 릴리스라는 뜻은 아닙니다. `--python-installer`로 로컬 설치 파일을 지정할 수도 있습니다.
+`--install-system`을 명시한 경우에만 공식 WineHQ 저장소·서명 키를 추가해 stable Wine 11 이상과 i386 지원을 설치하고, Xvfb, Openbox, 한국어 Tesseract OCR, 글꼴과 로그인 화면 도구를 설치합니다. root는 직접 실행하고 일반 계정은 sudo를 사용합니다. 직접 준비한 Wine이 있다면 `KAKAOCLI_WINE=/absolute/path/to/wine`으로 지정할 수 있으며, 이 경우 WineHQ 저장소와 Wine 패키지 추가는 생략합니다. Ubuntu 기본 Wine 9는 테스트한 카카오톡에서 실행 오류가 나므로 거부합니다.
+
+프로그램 데이터는 사용자 전용 Wine prefix와 상태 폴더에 보관합니다. Microsoft 공식 x64 Visual C++ 재배포 패키지를 설치하고 여섯 CRT DLL을 `KakaoTalk.exe`에 한해서 native,builtin으로 선택합니다. 다른 Windows 핵심 DLL이나 Python의 DLL 설정을 교체하지 않습니다. `--vc-runtime /absolute/path/vc_redist.x64.exe`로 로컬 공식 설치 파일을 지정할 수도 있습니다. [Microsoft의 다운로드 안내](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)를 확인하세요.
+
+Python의 Windows 실행 파일은 python.org에서 받아 Wine 안에 설치하며 배포 파일을 이 저장소에 포함하지 않습니다. 기본 Python 3.11.9는 마지막 3.11 Windows 설치 프로그램을 선택한 것이며 최신 보안 릴리스라는 뜻은 아닙니다. `--python-installer`로 로컬 설치 파일을 지정할 수도 있습니다.
 
 카카오톡 설치 파일은 [카카오 공식 다운로드 안내](https://pc.kakao.com/talk/notices/ko/2882?agent=win32)에서 받아 서버에 둡니다. CLI는 제3자 사이트에서 설치 파일을 받거나 계정·대화를 복사하지 않습니다.
 
@@ -47,7 +53,7 @@ kakao-local runtime login-view --password-file "$HOME/.config/kakao-cli/vnc.pass
 
 최초 카카오 계정 로그인과 모바일 인증은 사용자가 수행해야 합니다. 인증을 우회하거나 Windows PC의 로그인 토큰을 복사하지 않습니다. 저장된 로그인 상태는 이 서버의 전용 Wine prefix에 남습니다. 로그인 관리 화면을 닫으려면 runtime을 중지하고 다시 시작합니다.
 
-기본 가상 화면은 `:93`이며 사용 중인 화면은 재사용하지 않습니다. Xvfb는 TCP를 열지 않고 Xauthority 쿠키로 보호합니다. `KAKAOCLI_WINEPREFIX`, `KAKAOCLI_STATE_DIR`, `KAKAOCLI_DISPLAY`, `KAKAOCLI_WINDOWS_PYTHON`, `KAKAOCLI_KAKAO_EXE`로 경로·가상 화면을 지정할 수 있습니다. 설치된 실행기는 `~/.config/kakao-cli/runtime.env`를 읽습니다.
+기본 가상 화면은 `:93`이며 사용 중인 화면은 재사용하지 않습니다. Xvfb는 TCP를 열지 않고 Xauthority 쿠키로 보호합니다. `KAKAOCLI_WINEPREFIX`, `KAKAOCLI_STATE_DIR`, `KAKAOCLI_DISPLAY`, `KAKAOCLI_WINE`, `KAKAOCLI_WINDOWS_PYTHON`, `KAKAOCLI_KAKAO_EXE`로 경로·가상 화면을 지정할 수 있습니다. 설치된 실행기는 `~/.config/kakao-cli/runtime.env`를 읽습니다.
 
 ## 조회·전송·첨부
 
@@ -67,6 +73,8 @@ kakao-local download '방 제목' --at 180 240 --kind image --output-dir "$HOME/
 kakao-local download '방 제목' --at 260 340 --kind file --output-dir "$HOME/kakao-files" --json
 kakao-local analyze "$HOME/kakao-files/received.pdf" --output-dir "$HOME/kakao-review" --json
 ```
+
+`doctor`의 `ok`와 `main_window_found`는 앱 창을 감지했다는 의미입니다. 약관·로그인 화면이면 `ready_for_chats=false`, `login_state=setup_or_login_required`를 반환합니다. `chat_list_available`과 `ready_for_chats`도 UI 상태의 검사이며 카카오 서버의 인증·전달 확인은 아닙니다.
 
 좌표는 실제 capture 이미지를 열어 확인합니다. 예시 숫자를 그대로 사용하지 마세요. 사진은 썸네일, 파일은 **저장 버튼**을 선택합니다. 파일 본문이나 열기 버튼을 누르지 않습니다. 저장 대화상자는 전용 서버 가상 화면 안에서 처리되며 사용자 데스크톱에 표시되지 않습니다. 모달 저장창이 남으면 `download '방 제목' --dialog`로 먼저 완료합니다. 원본 파일 생성·크기 안정화·SHA256을 확인한 뒤 성공을 반환합니다.
 

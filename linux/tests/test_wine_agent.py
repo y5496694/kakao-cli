@@ -66,6 +66,7 @@ def modules(monkeypatch):
         _resolve_room=resolver, list_windows=lambda: [window], list_rooms=lambda: [window],
         _assert_room_title=lambda item: None, _assert_window_enabled=lambda hwnd: None,
         doctor=lambda: {"ok": True},
+        find_main_window=lambda: None, enum_children=lambda hwnd: [],
         read_visible=lambda *args, **kwargs: calls.append(("read", args, kwargs)) or (window, "[홍길동] [오전 9:00] 예시 대화"),
         send_message=lambda *args, **kwargs: calls.append(("send", args, kwargs)) or window,
         preview_send=lambda *args, **kwargs: {"target_ready": True, "draft_present": False},
@@ -79,6 +80,41 @@ def modules(monkeypatch):
 
 def test_command_rooms_returns_plain_window_list(modules):
     assert agent.handle_request({"operation": "command", "argv": ["rooms", "--json"]}) == [{"title": "홍길동", "hwnd": "0x14"}]
+
+
+@pytest.mark.parametrize("child_title,visible,enabled,available,ready", [
+    ("InitialAgreementView", True, True, False, False),
+    ("LoginView", True, True, False, False),
+    ("ChatRoomListView_example", True, True, True, True),
+    ("ChatRoomListView_example", False, True, False, False),
+    ("ChatRoomListView_example", True, False, True, False),
+])
+def test_doctor_distinguishes_started_app_from_chat_ui(modules, child_title, visible, enabled, available, ready):
+    b, _, calls, _ = modules
+    b.doctor = lambda: {"ok": True, "running": True, "main_window_found": True, "next": "준비 완료"}
+    b.find_main_window = lambda: SimpleNamespace(hwnd=10)
+    b.enum_children = lambda hwnd: [11]
+    b.win32gui.GetWindowText = lambda hwnd: child_title
+    b.win32gui.IsWindowVisible = lambda hwnd: visible
+    b.win32gui.IsWindowEnabled = lambda hwnd: enabled
+    result = agent.handle_request({"operation": "command", "argv": ["doctor", "--json"]})
+    assert result["ok"] is True
+    assert result["chat_list_available"] is available
+    assert result["ready_for_chats"] is ready
+    assert result["login_state"] == ("chat_list_available" if available else "setup_or_login_required")
+    assert result["server_authentication_verified"] is False
+    assert result["next"] != "준비 완료"
+    assert calls == []
+
+
+def test_doctor_preserves_failed_app_probe_and_reports_not_ready(modules):
+    b, _, _, _ = modules
+    b.doctor = lambda: {"ok": False, "running": False, "main_window_found": False}
+    result = agent.handle_request({"operation": "command", "argv": ["doctor"]})
+    assert result["ok"] is False
+    assert result["ready_for_chats"] is False
+    assert result["chat_list_available"] is False
+    assert result["login_state"] == "setup_or_login_required"
 
 
 def test_read_explicitly_uses_interactive_backend_only_inside_wine(modules):

@@ -1,0 +1,5 @@
+linux/*.sh text eol=lf
+linux/*.py text eol=lf
+linux/**/*.py text eol=lf
+linux/*.service text eol=lf
+macos/kakao text eol=lf

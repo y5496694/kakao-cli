@@ -180,7 +180,7 @@ def test_old_ssh_options_are_not_supported():
 def test_install_script_has_unix_newlines_and_scoped_system_install():
     script = (SOURCE / "install.sh").read_bytes()
     assert b"\r\n" not in script
-    assert b"if ((install_system)); then\n  sudo dpkg --add-architecture i386" in script
+    assert b'if ((install_system)); then\n  configure_system_command "$EUID"\n  source /etc/os-release' in script
     assert b"-nolisten tcp -auth" in script
     assert b"-localhost -rfbauth" in script
     assert b"--no-deps" in script
@@ -240,5 +240,139 @@ def test_room_resolution_and_command_share_runtime_lifecycle_lock(monkeypatch):
 
 def test_installer_stops_only_its_wineprefix_with_bounded_wait():
     script = (SOURCE / "install.sh").read_text()
-    assert 'WINEPREFIX="$prefix" timeout 10 wineserver -k' in script
-    assert 'WINEPREFIX="$prefix" timeout 15 wineserver -w' in script
+    assert 'WINEPREFIX="$prefix" timeout 10 "$wine_server" -k' in script
+    assert 'WINEPREFIX="$prefix" timeout 15 "$wine_server" -w' in script
+
+
+def test_headless_prefix_initialization_blocks_mono_only_during_bootstrap(monkeypatch, tmp_path):
+    selected = runtime.Config(tmp_path / "prefix", tmp_path / "state", wine="/opt/wine11/bin/wine")
+    selected.state.mkdir()
+    manager, calls = runtime.Runtime(selected), []
+    monkeypatch.delenv("WINEDLLOVERRIDES", raising=False)
+    monkeypatch.setattr(runtime.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)))
+    manager._initialize_prefix()
+    command, options = calls[0]
+    assert command == ["/opt/wine11/bin/wine", "wineboot.exe", "-u"]
+    assert options["timeout"] == 120
+    assert options["check"] is True
+    assert options["env"]["WINEDLLOVERRIDES"] == "mscoree,mshtml="
+    assert "WINEDLLOVERRIDES" not in selected.environment()
+    assert (selected.state / "wineboot.log").is_file()
+
+
+def test_failed_prefix_initialization_never_succeeds_silently(monkeypatch, config):
+    config.state.mkdir()
+    def fail(*args, **kwargs):
+        raise subprocess.TimeoutExpired("wineboot.exe", 120)
+    monkeypatch.setattr(runtime.subprocess, "run", fail)
+    with pytest.raises(runtime.RuntimeError, match="initialization failed"):
+        runtime.Runtime(config)._initialize_prefix()
+
+
+def test_installer_uses_selected_wine_and_scopes_bootstrap_override():
+    script = (SOURCE / "install.sh").read_text()
+    assert 'wine_cmd=${KAKAOCLI_WINE:-wine}' in script
+    assert 'WINEDLLOVERRIDES=\'mscoree,mshtml=\' timeout 120 "$wine_cmd" wineboot.exe -u' in script
+    assert 'wine_server="$(dirname -- "$wine_executable")/wineserver"' in script
+    assert '\n"$wine_cmd" \'C:\\Python311\\python.exe\' -m pip install' in script
+
+
+@pytest.mark.parametrize("bootstrap_fails", [False, True])
+def test_app_starts_only_after_successful_prefix_bootstrap(monkeypatch, config, bootstrap_fails):
+    config.prefix.mkdir()
+    config.state.mkdir()
+    manager, events = runtime.Runtime(config), []
+    monkeypatch.setattr(manager, "_lock", lambda: nullcontext())
+    monkeypatch.setattr(manager, "_read", lambda: {"processes": {}})
+    monkeypatch.setattr(manager, "status", lambda: {"running": False})
+    monkeypatch.setattr(manager, "_kakao_executable", lambda: "KakaoTalk.exe")
+    monkeypatch.setattr(manager, "_display_ready", lambda: True)
+    monkeypatch.setattr(manager, "_spawn", lambda name, *args: events.append(name))
+    monkeypatch.setattr(manager, "_stop", lambda state: events.append("cleanup"))
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: name)
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *args, **kwargs: None)
+    def bootstrap():
+        events.append("bootstrap")
+        if bootstrap_fails:
+            raise runtime.RuntimeError("bootstrap failed")
+    monkeypatch.setattr(manager, "_initialize_prefix", bootstrap)
+    if bootstrap_fails:
+        with pytest.raises(runtime.RuntimeError, match="bootstrap failed"):
+            manager.start()
+        assert events == ["xvfb", "openbox", "bootstrap", "cleanup"]
+    else:
+        manager.start()
+        assert events == ["xvfb", "openbox", "bootstrap", "kakao"]
+
+
+def bash_function_result(name, argument, *, setup="", suffix=""):
+    import shutil
+    bash = shutil.which("bash")
+    if sys.platform == "win32" and Path("C:/Program Files/Git/bin/bash.exe").is_file():
+        bash = "C:/Program Files/Git/bin/bash.exe"
+    if bash is None:
+        pytest.skip("Bash is unavailable")
+    script = (SOURCE / "install.sh").read_text()
+    start = script.index(name + "() {\n")
+    end = script.index("\n}\n", start) + 3
+    definition = script[start:end]
+    return subprocess.run([bash, "-c", definition + '\n' + setup + '\n' + name + ' "$1"' + suffix, "test", argument],
+                          capture_output=True, text=True, timeout=10)
+
+
+@pytest.mark.parametrize("version,supported", [
+    ("wine-9.0 (Ubuntu 9.0)", False), ("wine-10.20", False), ("wine-11.0", True),
+    ("wine-11.0 (Staging)", True), ("wine-12.1", True), ("unknown", False),
+])
+def test_installer_refuses_unsupported_wine_before_prefix_changes(version, supported):
+    result = bash_function_result("require_wine11", version)
+    assert (result.returncode == 0) is supported
+    if not supported:
+        assert "Wine 11 or newer" in result.stderr
+
+
+@pytest.mark.parametrize("status,succeeded", [("0", True), ("194", True), ("3010", True), ("1", False), ("102", False), ("124", False)])
+def test_vc_installer_accepts_only_success_or_documented_restart_status(status, succeeded):
+    result = bash_function_result("vc_install_succeeded", status)
+    assert (result.returncode == 0) is succeeded
+
+
+def test_system_install_uses_official_winehq_and_respects_custom_wine():
+    script = (SOURCE / "install.sh").read_text()
+    assert '${ID:-} != ubuntu' in script
+    assert '${VERSION_CODENAME:-} =~ ^(noble|jammy)$' in script
+    assert '$(dpkg --print-architecture) != amd64' in script
+    assert 'if [[ -z ${KAKAOCLI_WINE:-} ]]; then' in script
+    assert 'https://dl.winehq.org/wine-builds/winehq.key' in script
+    assert 'https://dl.winehq.org/wine-builds/ubuntu/dists/$VERSION_CODENAME/winehq-$VERSION_CODENAME.sources' in script
+    assert '"${system_command[@]}" apt-get install -y --install-recommends winehq-stable' in script
+    assert 'apt-get install -y wine64' not in script
+
+
+def test_vc_runtime_uses_official_installer_and_app_specific_dll_overrides():
+    script = (SOURCE / "install.sh").read_text()
+    assert '--vc-runtime) vc_runtime=' in script
+    assert 'https://aka.ms/vc14/vc_redist.x64.exe' in script
+    assert 'timeout 300 "$wine_cmd" "$vc_runtime" /install /quiet /norestart' in script
+    assert 'for dll in msvcp140 msvcp140_1 msvcp140_2 vcruntime140 vcruntime140_1 concrt140; do' in script
+    assert "'HKCU\\Software\\Wine\\AppDefaults\\KakaoTalk.exe\\DllOverrides'" in script
+    assert '/d native,builtin /f' in script
+    assert "'HKCU\\Software\\Wine\\DllOverrides'" not in script
+
+
+def test_root_system_install_needs_no_sudo_and_executes_directly():
+    result = bash_function_result("configure_system_command", "0", setup="PATH=", suffix=' && printf "%s" "${#system_command[@]}"')
+    assert result.returncode == 0
+    assert result.stdout == "0"
+
+
+def test_nonroot_system_install_uses_available_sudo():
+    result = bash_function_result("configure_system_command", "1000", setup="sudo() { :; }", suffix=' && printf "%s" "${system_command[*]}"')
+    assert result.returncode == 0
+    assert result.stdout == "sudo"
+
+
+def test_nonroot_system_install_fails_clearly_without_sudo():
+    result = bash_function_result("configure_system_command", "1000", setup="PATH=")
+    assert result.returncode != 0
+    assert "requires root or an available sudo" in result.stderr
