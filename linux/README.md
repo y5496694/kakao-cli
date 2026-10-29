@@ -18,7 +18,7 @@ bash linux/install.sh --install-system
 
 `--install-system`을 명시한 경우에만 공식 WineHQ 저장소·서명 키를 추가해 stable Wine 11 이상과 i386 지원을 설치하고, Xvfb, Openbox, 한국어 Tesseract OCR, 글꼴과 로그인 화면 도구를 설치합니다. root는 직접 실행하고 일반 계정은 sudo를 사용합니다. 직접 준비한 Wine이 있다면 `KAKAOCLI_WINE=/absolute/path/to/wine`으로 지정할 수 있으며, 이 경우 WineHQ 저장소와 Wine 패키지 추가는 생략합니다. Ubuntu 기본 Wine 9는 테스트한 카카오톡에서 실행 오류가 나므로 거부합니다.
 
-프로그램 데이터는 사용자 전용 Wine prefix와 상태 폴더에 보관합니다. Microsoft 공식 x64 Visual C++ 재배포 패키지를 설치하고 여섯 CRT DLL을 `KakaoTalk.exe`에 한해서 native,builtin으로 선택합니다. 다른 Windows 핵심 DLL이나 Python의 DLL 설정을 교체하지 않습니다. `--vc-runtime /absolute/path/vc_redist.x64.exe`로 로컬 공식 설치 파일을 지정할 수도 있습니다. [Microsoft의 다운로드 안내](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)를 확인하세요.
+프로그램 데이터는 사용자 전용 Wine prefix와 상태 폴더에 보관합니다. Microsoft 공식 x64 Visual C++ 재배포 원본에서 `cabextract`로 여섯 CRT DLL만 추출하고 AMD64 PE32+ 형식과 SHA256을 검사합니다. 추출한 DLL은 카카오톡 설치 폴더에 배치하고 `KakaoTalk.exe`에 한해서 native,builtin으로 선택합니다. 기존 파일이 다르면 캐시에 백업합니다. 다른 Windows 핵심 DLL이나 Python의 DLL 설정을 교체하지 않습니다. `--vc-runtime /absolute/path/vc_redist.x64.exe`로 로컬 공식 원본을 지정할 수도 있습니다. 최신 Burn 설치 EXE는 테스트한 Wine에서 충돌했으므로 직접 실행하지 않습니다. [Microsoft의 다운로드 안내](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)를 확인하세요.
 
 Python의 Windows 실행 파일은 python.org에서 받아 Wine 안에 설치하며 배포 파일을 이 저장소에 포함하지 않습니다. 기본 Python 3.11.9는 마지막 3.11 Windows 설치 프로그램을 선택한 것이며 최신 보안 릴리스라는 뜻은 아닙니다. `--python-installer`로 로컬 설치 파일을 지정할 수도 있습니다.
 
@@ -52,6 +52,8 @@ kakao-local runtime login-view --password-file "$HOME/.config/kakao-cli/vnc.pass
 ```
 
 최초 카카오 계정 로그인과 모바일 인증은 사용자가 수행해야 합니다. 인증을 우회하거나 Windows PC의 로그인 토큰을 복사하지 않습니다. 저장된 로그인 상태는 이 서버의 전용 Wine prefix에 남습니다. 로그인 관리 화면을 닫으려면 runtime을 중지하고 다시 시작합니다.
+
+`runtime start`는 프로세스를 시작하며 앱 화면 준비를 기다리지는 않습니다. 첫 실행 직후에는 `doctor`가 창을 아직 찾지 못할 수 있으므로 앱 초기화가 끝난 뒤 다시 확인합니다. 초기화가 완료된 prefix에서는 강제 갱신을 반복하지 않으며, 중지할 때 해당 prefix의 Wine 보조 프로세스까지 정리합니다.
 
 기본 가상 화면은 `:93`이며 사용 중인 화면은 재사용하지 않습니다. Xvfb는 TCP를 열지 않고 Xauthority 쿠키로 보호합니다. `KAKAOCLI_WINEPREFIX`, `KAKAOCLI_STATE_DIR`, `KAKAOCLI_DISPLAY`, `KAKAOCLI_WINE`, `KAKAOCLI_WINDOWS_PYTHON`, `KAKAOCLI_KAKAO_EXE`로 경로·가상 화면을 지정할 수 있습니다. 설치된 실행기는 `~/.config/kakao-cli/runtime.env`를 읽습니다.
 

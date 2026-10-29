@@ -60,9 +60,13 @@ REA로 확인한 PE의 `GetSaveFileNameW` 경계에서 선택한 저장 경로�
 
 ## 검증과 보관
 
-Ubuntu 24.04.5/WSL2를 별도로 준비해 공통 첨부 분석과 Linux 테스트 96개를 실제 Linux Python에서 통과했습니다. Wine 9.0 및 공식 WineHQ 11.0의 x64 실행기로 Windows Python 3.11.9·pywin32·Pillow와 Wine 에이전트 호출을 확인했습니다. 인증된 전용 Xvfb/Openbox 화면과 PNG 캡처도 확인했습니다. WSLg가 파일 시스템 소켓을 만들지 못해도 연결되는 경우가 있어, 가상 화면 준비 검사는 `xdpyinfo`의 실제 접속으로 바꿨습니다. Wine 첫 초기화의 Mono/Gecko 설치 팝업은 초기화 subprocess에서만 비활성화하고, 완료 후 앱을 시작합니다.
+Ubuntu 24.04.5/WSL2를 별도로 준비해 공통 첨부 분석과 Linux 테스트 131개를 실제 Linux Python에서 통과했습니다. Wine 9.0 및 공식 WineHQ 11.0의 x64 실행기로 Windows Python 3.11.9·pywin32·Pillow와 Wine 에이전트 호출을 확인했습니다. 인증된 전용 Xvfb/Openbox 화면과 PNG 캡처도 확인했습니다. WSLg가 파일 시스템 소켓을 만들지 못해도 연결되는 경우가 있어, 가상 화면 준비 검사는 `xdpyinfo`의 실제 접속으로 바꿨습니다. Wine 첫 초기화의 Mono/Gecko 설치 팝업은 초기화 subprocess에서만 비활성화하고, 완료 후 앱을 시작합니다. 완료된 prefix에서는 불필요한 `wineboot -u` 갱신을 반복하지 않습니다.
 
-카카오톡 26.9.0.5337/x64는 Wine 9에서 Themida의 `Wrong DLL present` 오류로 로그인 전에 막혔고, Wine 11만 적용한 새 prefix에서도 창이 확인되지 않았습니다. Wine 11에 네이티브 Visual C++ 14.50.35710.0의 `msvcp140`, `msvcp140_1`, `msvcp140_2`, `vcruntime140`, `vcruntime140_1`, `concrt140`을 적용한 뒤 **실제 카카오톡 초기 약관 화면이 렌더링되는 것을 확인했습니다.** 이 첫 확인은 비공개 테스트 앱 폴더의 DLL을 사용했으며, 배포 설치기는 Microsoft 공식 재배포 패키지와 앱별 DLL override로 해당 구성을 준비합니다. 원본 프로그램 파일은 Windows 원본과 해시·AMD64 구조가 일치함을 확인했고, 프로그램·계정 데이터를 공개 저장소에 배포하지 않습니다.
+카카오톡 26.9.0.5337/x64는 Wine 9에서 Themida의 `Wrong DLL present` 오류로 로그인 전에 막혔고, Wine 11만 적용한 새 prefix에서도 창이 확인되지 않았습니다. Wine 11에 네이티브 Visual C++ 14.50.35710.0의 `msvcp140`, `msvcp140_1`, `msvcp140_2`, `vcruntime140`, `vcruntime140_1`, `concrt140`을 적용한 뒤 **실제 카카오톡 초기 약관 화면이 렌더링되는 것을 확인했습니다.**
+
+이후 공식 WineHQ 11.0의 amd64/i386 패키지와 새 prefix에서 Microsoft 공식 재배포 원본 14.51.36247.0으로 다시 확인했습니다. Burn 설치 EXE 직접 실행은 page fault로 실패했습니다. 배포 설치기는 이를 실행하지 않고 `native_crt.py`와 `cabextract`로 여섯 AMD64 DLL만 추출·검증해 카카오톡 폴더에 배치합니다. 이 경로로도 실제 초기 약관 화면과 Wine 에이전트 진단이 정상 동작했습니다. Windows PC의 런타임 DLL을 복사할 필요가 없습니다. 검사한 Microsoft 원본 SHA256은 `843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c`입니다. CAB에서 네이티브 CRT를 추출하는 기존 호환 처리도 [Winetricks 소스](https://github.com/Winetricks/winetricks/blob/master/src/winetricks)의 `load_vcrun2026`에서 확인할 수 있습니다.
+
+새 테스트 prefix에서도 카카오톡 실행 파일의 버전 26.9.0.5337과 SHA256이 위 Windows 분석 원본과 같음을 확인했습니다. 전용 wineserver를 포함한 종료와 재시작 후 앱 창 진단도 실제 환경에서 확인했습니다. 전체 Windows 회귀 게이트는 272개 테스트와 개인정보 점검을 통과했습니다. 프로그램·런타임 바이너리와 계정 데이터는 공개 저장소에 배포하지 않습니다.
 
 초기 화면에서 실제 Wine 에이전트가 `ok=true`, `main_window_found=true`, `ready_for_chats=false`, `login_state=setup_or_login_required`를 반환하는 것도 확인했습니다. 약관 승인이나 계정 로그인·모바일 인증은 수행하지 않았으며, Linux에서 로그인 후 대화 조회·전송 성공을 주장하지 않습니다. 설치 스크립트 전체의 새 서버 설치와 다른 Wine·카카오톡 조합까지 검증한 것은 아닙니다.
 

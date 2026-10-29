@@ -17,7 +17,7 @@ Usage: bash linux/install.sh [options]
   --installer PATH             Official local KakaoTalk Windows installer
   --installer-arg VALUE        Explicit installer argument; may be repeated
   --python-installer PATH      Local Python 3.11.9 x64 installer (otherwise python.org)
-  --vc-runtime PATH            Local official VC++ x64 redistributable (otherwise Microsoft)
+  --vc-runtime PATH            Official VC++ x64 original for extraction (otherwise Microsoft)
   --vnc-password-file PATH     Existing x11vnc password file (chmod 600), localhost only
   --prefix PATH               Dedicated Wine prefix
   --install-system            Explicitly add WineHQ stable 11+ and Ubuntu dependencies
@@ -36,11 +36,6 @@ require_wine11() {
   fi
   printf 'Wine 11 or newer is required; Ubuntu Wine 9 is incompatible. Select KAKAOCLI_WINE or use --install-system for WineHQ stable.\n' >&2
   return 1
-}
-
-vc_install_succeeded() {
-  # Unix process statuses may expose Windows 3010 (restart required) as 194.
-  case "$1" in 0|194|3010) return 0 ;; *) return 1 ;; esac
 }
 
 configure_system_command() {
@@ -80,7 +75,7 @@ if ((install_system)); then
   fi
   "${system_command[@]}" dpkg --add-architecture i386
   "${system_command[@]}" apt-get update
-  "${system_command[@]}" apt-get install -y ca-certificates xvfb openbox xauth x11-utils x11vnc scrot curl python3 python3-venv tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng fonts-nanum
+  "${system_command[@]}" apt-get install -y ca-certificates cabextract xvfb openbox xauth x11-utils x11vnc scrot curl python3 python3-venv tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng fonts-nanum
   if [[ -z ${KAKAOCLI_WINE:-} ]]; then
     repo_stage=$(mktemp -d)
     if ! curl --fail --location --proto '=https' --tlsv1.2 --output "$repo_stage/winehq.key" https://dl.winehq.org/wine-builds/winehq.key ||
@@ -99,7 +94,7 @@ if ((install_system)); then
     "${system_command[@]}" apt-get install -y --install-recommends winehq-stable
   fi
 fi
-for program in "$wine_cmd" Xvfb openbox xauth xdpyinfo python3 curl timeout; do
+for program in "$wine_cmd" Xvfb openbox xauth xdpyinfo python3 cabextract curl timeout; do
   command -v "$program" >/dev/null || { printf 'Missing %s; review --install-system.\n' "$program" >&2; exit 1; }
 done
 wine_executable=$(command -v -- "$wine_cmd")
@@ -194,9 +189,11 @@ if [[ -n $password_file ]]; then
   vstart=$(process_start "$vpid")
   printf 'Setup view: 127.0.0.1:5903 (password required).\n'
 fi
-if ! WINEDLLOVERRIDES='mscoree,mshtml=' timeout 120 "$wine_cmd" wineboot.exe -u >"$state/install-wineboot.log" 2>&1; then
-  printf 'Headless Wine initialization failed; inspect install-wineboot.log.\n' >&2
-  exit 1
+if [[ ! -f $prefix/system.reg || ! -f $prefix/user.reg || ! -f $prefix/drive_c/windows/system32/kernel32.dll ]]; then
+  if ! WINEDLLOVERRIDES='mscoree,mshtml=' timeout 120 "$wine_cmd" wineboot.exe -u >"$state/install-wineboot.log" 2>&1; then
+    printf 'Headless Wine initialization failed; inspect install-wineboot.log.\n' >&2
+    exit 1
+  fi
 fi
 if [[ -z $vc_runtime ]]; then
   vc_runtime="$state/vc_redist.x64.exe"
@@ -205,16 +202,8 @@ if [[ -z $vc_runtime ]]; then
     mv -- "$vc_runtime.part" "$vc_runtime"
   fi
 fi
-[[ -f $vc_runtime ]] || { printf 'VC++ redistributable must be an existing local official installer.\n' >&2; exit 1; }
-vc_status=0
-timeout 300 "$wine_cmd" "$vc_runtime" /install /quiet /norestart >"$state/install-vc-runtime.log" 2>&1 || vc_status=$?
-if ! vc_install_succeeded "$vc_status"; then
-  printf 'VC++ runtime installation failed with status %s; inspect install-vc-runtime.log.\n' "$vc_status" >&2
-  exit 1
-fi
-if ((vc_status != 0)); then
-  printf 'VC++ installer reported restart-required success (%s; Windows 3010 may appear as Unix 194).\n' "$vc_status"
-fi
+[[ -f $vc_runtime ]] || { printf 'VC++ extraction requires an existing local official redistributable.\n' >&2; exit 1; }
+python3 "$repo/linux/native_crt.py" --installer "$vc_runtime" --prefix "$prefix" --cache "$state/native-crt"
 for dll in msvcp140 msvcp140_1 msvcp140_2 vcruntime140 vcruntime140_1 concrt140; do
   timeout 30 "$wine_cmd" reg.exe add 'HKCU\Software\Wine\AppDefaults\KakaoTalk.exe\DllOverrides' /v "$dll" /t REG_SZ /d native,builtin /f >"$state/install-crt-overrides.log" 2>&1
 done
@@ -236,6 +225,7 @@ if [[ -n $installer ]]; then
   printf 'Complete official Kakao setup inside the isolated desktop if prompted.\n'
   "$wine_cmd" "$installer" "${installer_arguments[@]}"
 fi
+python3 "$repo/linux/native_crt.py" --installer "$vc_runtime" --prefix "$prefix" --cache "$state/native-crt" --deploy
 python3 -m venv "$repo/.venv-linux"
 "$repo/.venv-linux/bin/python" -m pip install -r "$repo/linux/requirements-analysis.txt"
 

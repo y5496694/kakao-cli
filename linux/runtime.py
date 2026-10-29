@@ -162,6 +162,10 @@ class Runtime:
             return False
 
     def _initialize_prefix(self):
+        completed = (self.config.prefix / "system.reg", self.config.prefix / "user.reg",
+                     self.config.prefix / "drive_c/windows/system32/kernel32.dll")
+        if all(path.is_file() for path in completed):
+            return
         # Bootstrap helpers may request Mono/Gecko downloads. Disable those
         # components only during wineboot so headless startup cannot await a GUI.
         environment = {**self.config.environment(), "WINEDLLOVERRIDES": "mscoree,mshtml="}
@@ -215,6 +219,32 @@ class Runtime:
             return self.status()
 
     def _stop(self, state):
+        records = state["processes"]
+        if records and state.get("prefix") != str(self.config.prefix):
+            raise RuntimeError("Refusing to stop a runtime recorded for a different Wine prefix")
+        # Validate every recorded group before a prefix-wide wineserver action.
+        for name in ("vnc", "kakao", "openbox", "xvfb"):
+            record = records.get(name)
+            if record is None:
+                continue
+            if (not isinstance(record, dict) or isinstance(record.get("pid"), bool)
+                or not isinstance(record.get("pid"), int) or record["pid"] <= 0
+                or not isinstance(record.get("start"), str) or not record["start"]):
+                raise RuntimeError(f"Refusing to stop {name}: process ownership record is invalid")
+            identity = process_identity(record["pid"])
+            if identity is not None and identity != record["start"]:
+                raise RuntimeError(f"Refusing to stop {name}: PID now belongs to another process")
+            if identity is not None and os.getpgid(record["pid"]) != record["pid"]:
+                raise RuntimeError(f"Refusing to stop {name}: process group ownership changed")
+        if records.get("kakao"):
+            server = self._wineserver()
+            try:
+                for option, limit in (("-k", 10), ("-w", 15)):
+                    subprocess.run([server, option], env=self.config.environment(),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE, timeout=limit, check=True)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RuntimeError("Dedicated Wine prefix shutdown failed; runtime state was retained") from exc
         for name in ("vnc", "kakao", "openbox", "xvfb"):
             record = state["processes"].get(name)
             if not record:
@@ -233,6 +263,15 @@ class Runtime:
             if self._alive(record):
                 os.killpg(record["pid"], signal.SIGKILL)
         self.state_file.unlink(missing_ok=True)
+
+    def _wineserver(self):
+        executable = shutil.which(self.config.wine)
+        if executable:
+            wine = Path(executable)
+            for candidate in (wine.resolve().parent / "wineserver", wine.parent / "wineserver"):
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
+        raise RuntimeError("Selected Wine has no matching wineserver; runtime state was retained")
 
     def stop(self):
         with self._lock():
