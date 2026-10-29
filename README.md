@@ -1,5 +1,53 @@
 # kakaocli-win
 
+## 이 PC의 REA 기반 확장 — 0.4.0
+
+이 로컬 버전은 [morluto/rea](https://github.com/morluto/rea) 6.8.0으로 설치된
+카카오톡 26.9.0.5337을 분석하고, 아래 원본 CLI를 보완했습니다.
+REA PE/Rizin 정적 분석과 Frida 런타임 관찰을 수행했습니다.
+런타임에서 확인한 입력 컨트롤은 `RICHEDIT50W / 1006`, 대화 목록은
+`EVA_VH_ListControl_Dblclk / 100`입니다. [분석 근거와 범위](ANALYSIS.md)를 참고하세요.
+
+이 PC의 실행기: `D:\Codex\bin\kakao.cmd`
+
+```powershell
+& 'D:\Codex\bin\kakao.cmd' doctor --json
+& 'D:\Codex\bin\kakao.cmd' rooms --json
+& 'D:\Codex\bin\kakao.cmd' messages '방 제목' --exact --limit 30 --json
+& 'D:\Codex\bin\kakao.cmd' search '방 제목' '회의' --exact --json
+& 'D:\Codex\bin\kakao.cmd' send '방 제목' --message-file 'D:\Codex\tmp\message.txt' --dry-run --json
+# 사용자가 실제 전송을 지시한 대상과 문안에 대해 실행
+& 'D:\Codex\bin\kakao.cmd' send '방 제목' --message-file 'D:\Codex\tmp\message.txt' --yes --json
+```
+
+- 읽기·검색은 독립 창으로 열린 방의 UI에 로드된 내용만 다룹니다.
+  전체 과거 기록은 보장하지 않으며 `coverage=loaded_ui_only`를 반환합니다.
+- 닫힌 방 자동 검색·열기는 지원하지 않습니다. `open`은 이미 열린 방을 선택합니다.
+- `--json`은 하위 명령 앞뒤에 쓸 수 있습니다.
+- 전송은 제목 완전 일치입니다. 같은 제목의 창이 여러 개면 거부합니다.
+- `--message-file` 또는 `--stdin`으로 UTF-8 다중행 문안을 입력할 수 있습니다.
+- `--dry-run`은 대상·입력창·기존 초안을 읽기만 합니다. 포커스 이동이나 입력은 하지 않습니다.
+- 기존 초안을 덮어쓰지 않으며, 전송 직전 프로세스·포커스·입력 내용이 맞는지 검사합니다.
+- 전송 결과 `submitted_unconfirmed`는 Enter 제출 관찰입니다. 서버 전달·상대방 수신 확인은 아닙니다.
+- 비대화형 실행에서 `--yes` 없이 실제 전송하면 명시적으로 실패합니다.
+- 실행기는 데이터 경로를 `D:\Codex\apps\kakao-cli`, 임시 경로를 `D:\Codex\tmp`로 설정합니다.
+  키는 DPAPI 암호화 저장이며, 일반 UI 읽기·전송에는 DB 키 복구가 필요하지 않습니다.
+
+REA 분석 재현:
+
+```powershell
+# 정적 PE/섹션 분석
+.\scripts\rea-kakao.ps1
+# 실행 중인 카카오톡 컨트롤 구조 관찰: Frida 스크립트 로드 후 해제
+.\scripts\rea-kakao.ps1 -Runtime
+```
+
+`-Runtime` 스크립트는 메시지 본문·방 이름을 수집하지 않고 컨트롤 클래스·ID와
+정해진 프로그램 문자열의 주소만 반환합니다. UI 입력·메시지 전송·후킹은 하지 않습니다.
+분석 결과는 `work/rea` 아래에 보관되며 Git에서 제외됩니다.
+
+아래는 기반 프로젝트의 설명입니다. 기반 소스와 MIT 라이선스를 유지했습니다.
+
 Windows 10/11용 비공식 카카오톡 CLI입니다. 카카오 공식 API나 프로토콜을 사용하지 않고, 실행 중인 PC 카카오톡 창을 Win32 API로 조작합니다.
 
 ## 현재 지원 범위

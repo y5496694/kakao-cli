@@ -333,6 +333,8 @@ def default_chat_list_database() -> Path:
 
 
 def _key_store_path() -> Path:
+    if os.environ.get("KAKAOCLI_DATA_DIR"):
+        return Path(os.environ["KAKAOCLI_DATA_DIR"]) / "keys.json"
     return Path(os.environ["LOCALAPPDATA"]) / "kakaocli-win" / "keys.json"
 
 

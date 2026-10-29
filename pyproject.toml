@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kakaocli-win"
-version = "0.3.0"
+version = "0.4.0"
 description = "A safety-first, unofficial KakaoTalk CLI for Windows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ dependencies = ["pywin32>=306", "numpy>=1.26", "cryptography>=42"]
 
 [project.scripts]
 kakaocli = "kakaocli_win.cli:main"
+kakao = "kakaocli_win.cli:main"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

@@ -10,15 +10,18 @@ from typing import Any
 from . import __version__
 from .backend import (
     KakaoError,
+    WIN32_ERRORS,
     doctor,
     inspect_tree,
     list_rooms,
     list_windows,
     open_room,
+    preview_send,
     read_visible,
     send_message,
     start_kakaotalk,
 )
+from .transcript import loaded_messages
 
 
 def emit(data: Any, *, as_json: bool) -> None:
@@ -37,8 +40,56 @@ def emit(data: Any, *, as_json: bool) -> None:
 def confirm_send(room: str, message: str, *, skip: bool) -> bool:
     if skip:
         return True
+    if not sys.stdin.isatty():
+        raise KakaoError("비대화형 전송에는 --yes가 필요합니다. --dry-run으로 먼저 확인하세요.")
     print(f"전송 대상: {room}\n메시지: {message}", file=sys.stderr)
-    return input("이대로 전송할까요? [y/N] ").strip().casefold() in {"y", "yes"}
+    try:
+        return input("이대로 전송할까요? [y/N] ").strip().casefold() in {"y", "yes"}
+    except EOFError:
+        return False
+
+
+def _message_arguments(parser: argparse.ArgumentParser) -> None:
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("message", nargs="?", help="전송할 메시지")
+    source.add_argument("--message-file", help="UTF-8 텍스트 파일에서 메시지 읽기")
+    source.add_argument("--stdin", action="store_true", help="표준 입력의 UTF-8 메시지 읽기")
+
+
+def _read_message(args: argparse.Namespace) -> str:
+    try:
+        if args.message_file:
+            message = Path(args.message_file).read_text(encoding="utf-8-sig")
+        elif args.stdin:
+            stream = getattr(sys.stdin, "buffer", None)
+            message = stream.read().decode("utf-8-sig") if stream else sys.stdin.read()
+        else:
+            message = args.message
+    except (OSError, UnicodeError) as exc:
+        raise KakaoError(f"UTF-8 메시지를 읽지 못했습니다: {exc}") from exc
+    if not message or not message.strip():
+        raise KakaoError("빈 메시지는 전송할 수 없습니다.")
+    if "\x00" in message:
+        raise KakaoError("메시지에 NUL 문자를 포함할 수 없습니다.")
+    return message
+
+
+def _positive_int(value: str) -> int:
+    result = int(value)
+    if result < 1:
+        raise argparse.ArgumentTypeError("1 이상의 값을 입력하세요.")
+    return result
+
+
+def _submitted_result(window, message: str) -> dict:
+    return {
+        "submitted": True,
+        "delivery_confirmed": False,
+        "status": "submitted_unconfirmed",
+        "room": window.title,
+        "message": message,
+        "note": "입력과 Enter 처리를 확인했습니다. 서버 전달 및 수신 여부는 확인하지 못했습니다.",
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,51 +98,67 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("doctor", help="설치 및 실행 상태 점검")
-    sub.add_parser("start", help="PC 카카오톡 실행")
-    sub.add_parser("windows", help="감지된 카카오톡 창 출력")
-    sub.add_parser("rooms", help="현재 독립 창으로 열린 채팅방 출력")
+    output_options = argparse.ArgumentParser(add_help=False)
+    output_options.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="JSON으로 출력")
 
-    open_parser = sub.add_parser("open", help="채팅방 검색 및 열기")
+    def command(name: str, **kwargs) -> argparse.ArgumentParser:
+        return sub.add_parser(name, parents=[output_options], **kwargs)
+
+    command("doctor", help="설치 및 실행 상태 점검")
+    command("start", help="PC 카카오톡 실행")
+    command("windows", help="감지된 카카오톡 창 출력")
+    command("rooms", help="현재 독립 창으로 열린 채팅방 출력")
+
+    open_parser = command("open", help="독립 창으로 열린 채팅방 선택")
     open_parser.add_argument("room")
     open_parser.add_argument("--exact", action="store_true")
 
-    read_parser = sub.add_parser("read", help="열린 화면에 보이는 대화 복사")
+    read_parser = command("read", help="열린 화면에 보이는 대화 복사")
     read_parser.add_argument("room")
     read_parser.add_argument("--exact", action="store_true")
 
-    send_parser = sub.add_parser("send", help="채팅방에 메시지 전송")
+    for name, help_text in (("messages", "로드된 UI 대화를 구조화해 조회"), ("search", "로드된 UI 대화 내용 검색")):
+        messages_parser = command(name, help=help_text)
+        messages_parser.add_argument("room")
+        messages_parser.add_argument("--exact", action="store_true")
+        messages_parser.add_argument("--limit", type=_positive_int, default=50)
+        if name == "search":
+            messages_parser.add_argument("query", help="메시지 내용에 포함된 문자열")
+        else:
+            messages_parser.add_argument("--contains", help="메시지 내용에 포함된 문자열")
+
+    send_parser = command("send", help="채팅방에 메시지 전송")
     send_parser.add_argument("room")
-    send_parser.add_argument("message")
-    send_parser.add_argument("--exact", action="store_true")
+    _message_arguments(send_parser)
+    send_parser.add_argument("--exact", action="store_true", default=True, help="방 제목 완전 일치(기본값)")
     send_parser.add_argument("--yes", action="store_true", help="확인 질문 생략")
     send_parser.add_argument("--dry-run", action="store_true", help="대상과 내용을 출력하고 전송하지 않음")
 
-    send_self_parser = sub.add_parser(
+    send_self_parser = command(
         "send-self", help="DB에서 나와의 채팅을 찾아 메시지 전송"
     )
-    send_self_parser.add_argument("message")
+    _message_arguments(send_self_parser)
     send_self_parser.add_argument("--yes", action="store_true", help="확인 질문 생략")
     send_self_parser.add_argument(
         "--dry-run", action="store_true", help="대상과 내용을 출력하고 전송하지 않음"
     )
 
-    inspect_parser = sub.add_parser("inspect", help="호환성 진단용 자식 컨트롤 출력")
+    inspect_parser = command("inspect", help="호환성 진단용 자식 컨트롤 출력")
     inspect_parser.add_argument("--room", help="채팅방 창 검사; 생략 시 메인 창 검사")
 
-    recover_parser = sub.add_parser("recover-key", help="실행 중인 카카오톡 메모리에서 DB 키 복구")
+    recover_parser = command("recover-key", help="실행 중인 카카오톡 메모리에서 DB 키 복구")
     recover_parser.add_argument("--db", help="대상 .edb 경로; 생략 시 최신 TalkUserDB.edb")
     recover_parser.add_argument("--pid", type=int, help="KakaoTalk.exe PID")
     recover_parser.add_argument("--stride", type=int, default=4, choices=[1, 2, 4, 8, 16])
     recover_parser.add_argument("--timeout", type=float, default=120.0, help="검색 제한 시간(초)")
     recover_parser.add_argument("--no-store", action="store_true", help="검증만 하고 DPAPI 저장하지 않음")
-    sub.add_parser("key-status", help="DPAPI 키 저장소 상태 확인")
+    command("key-status", help="DPAPI 키 저장소 상태 확인")
 
-    friends_parser = sub.add_parser("friends", help="로컬 DB에서 친구 목록 조회")
+    friends_parser = command("friends", help="로컬 DB에서 친구 목록 조회")
     friends_parser.add_argument("--contains", help="표시 이름에 포함된 문자열")
     friends_parser.add_argument("--include-hidden", action="store_true", help="숨김 친구 포함")
 
-    chat_rooms_parser = sub.add_parser(
+    chat_rooms_parser = command(
         "chat-rooms", help="로컬 DB에서 채팅방 목록 조회(메시지 본문 제외)"
     )
     chat_rooms_parser.add_argument("--contains", help="방 제목에 포함된 문자열")
@@ -101,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-ids", action="store_true", help="JSON 출력에 로컬 chatId 포함"
     )
 
-    contacts_parser = sub.add_parser(
+    contacts_parser = command(
         "export-room-contacts",
         help="DB에 캐시된 채팅방 참여자 이름과 연락처를 CSV로 저장",
     )
@@ -114,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="참여자 캐시가 불완전해도 부분 목록 저장",
     )
 
-    schema_parser = sub.add_parser("db-schema", help="복호화된 DB의 테이블 구조만 조회")
+    schema_parser = command("db-schema", help="복호화된 DB의 테이블 구조만 조회")
     schema_parser.add_argument("--db", help="대상 .edb 경로; 생략 시 TalkUserDB.edb")
     return parser
 
@@ -135,7 +202,13 @@ def main(argv: list[str] | None = None) -> int:
             result = {"opened": open_room(args.room, exact=args.exact).to_dict()}
         elif args.command == "read":
             window, text = read_visible(args.room, exact=args.exact)
-            result = {"room": window.title, "text": text}
+            result = {"room": window.title, "text": text, "coverage": "loaded_ui_only", "complete_history": False}
+        elif args.command in {"messages", "search"}:
+            contains = args.query if args.command == "search" else args.contains
+            if contains is not None and not contains.strip():
+                raise KakaoError("검색 문자열은 비어 있을 수 없습니다.")
+            window, text = read_visible(args.room, exact=args.exact)
+            result = {"room": window.title, **loaded_messages(text, contains=contains, limit=args.limit)}
         elif args.command == "inspect":
             result = inspect_tree(args.room)
         elif args.command == "recover-key":
@@ -250,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             database = Path(args.db).resolve() if args.db else default_database()
             result = read_schema(database, load_stored_key(database))
         elif args.command == "send-self":
+            message = _read_message(args)
             from .db_reader import read_chat_rooms
             from .key_recovery import default_chat_list_database, load_stored_key
 
@@ -263,31 +337,38 @@ def main(argv: list[str] | None = None) -> int:
             if len(memo_rooms) != 1 or not memo_rooms[0]["title"]:
                 raise KakaoError("나와의 채팅방을 하나로 식별하지 못했습니다.")
             room = memo_rooms[0]["title"]
-            preview = {"room": room, "message": args.message, "exact": True}
+            preview = {"room": room, "message": message, "exact": True}
             if args.dry_run:
-                result = {"sent": False, "dry_run": True, **preview}
+                result = {"sent": False, "dry_run": True, **preview, **preview_send(room, exact=True)}
             else:
-                if not confirm_send(room, args.message, skip=args.yes):
+                if args.stdin and not args.yes:
+                    raise KakaoError("--stdin 전송에는 --yes가 필요합니다.")
+                if not confirm_send(room, message, skip=args.yes):
                     emit({"sent": False, "cancelled": True}, as_json=args.json)
                     return 2
-                window = send_message(room, args.message, exact=True)
-                result = {"sent": True, "room": window.title, "message": args.message}
+                window = send_message(room, message, exact=True)
+                result = _submitted_result(window, message)
         elif args.command == "send":
-            preview = {"room": args.room, "message": args.message, "exact": args.exact}
+            if not args.room.strip():
+                raise KakaoError("채팅방 이름은 비어 있을 수 없습니다.")
+            message = _read_message(args)
+            preview = {"room": args.room, "message": message, "exact": True}
             if args.dry_run:
-                result = {"sent": False, "dry_run": True, **preview}
+                result = {"sent": False, "dry_run": True, **preview, **preview_send(args.room, exact=True)}
             else:
-                if not confirm_send(args.room, args.message, skip=args.yes):
+                if args.stdin and not args.yes:
+                    raise KakaoError("--stdin 전송에는 --yes가 필요합니다.")
+                if not confirm_send(args.room, message, skip=args.yes):
                     emit({"sent": False, "cancelled": True}, as_json=args.json)
                     return 2
-                window = send_message(args.room, args.message, exact=args.exact)
-                result = {"sent": True, "room": window.title, "message": args.message}
+                window = send_message(args.room, message, exact=True)
+                result = _submitted_result(window, message)
         else:
             parser.error("알 수 없는 명령")
             return 2
         emit(result, as_json=args.json)
         return 0
-    except KakaoError as exc:
+    except (KakaoError, *WIN32_ERRORS) as exc:
         error = {"ok": False, "error": str(exc)}
         if args.json:
             print(json.dumps(error, ensure_ascii=False), file=sys.stderr)

@@ -4,14 +4,20 @@ import ctypes
 import os
 import subprocess
 import time
+from ctypes import wintypes
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+WIN32_ERRORS: tuple[type[Exception], ...] = ()
+
 if os.name == "nt":
+    import pywintypes
     import win32api
     import win32con
     import win32gui
     import win32process
+
+    WIN32_ERRORS = (pywintypes.error,)
 
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -21,6 +27,9 @@ if os.name == "nt":
 
 CHAT_CLASS = "EVA_Window_Dblclk"
 INPUT_CLASSES = {"RICHEDIT50W", "RichEdit50W", "RichEditD2DPT"}
+MESSAGE_INPUT_ID = 1006
+TRANSCRIPT_ID = 100
+TRANSCRIPT_CLASS = "EVA_VH_ListControl_Dblclk"
 
 
 class KakaoError(RuntimeError):
@@ -36,6 +45,8 @@ class WindowInfo:
     height: int
     visible: bool
     kind: str
+    pid: int | None = None
+    executable: str | None = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -55,7 +66,7 @@ def enum_children(hwnd: int) -> list[int]:
 
 
 def _input_handles(hwnd: int) -> list[int]:
-    return [
+    candidates = [
         child
         for child in enum_children(hwnd)
         if win32gui.IsWindowVisible(child)
@@ -64,6 +75,20 @@ def _input_handles(hwnd: int) -> list[int]:
             or "RICHEDIT" in win32gui.GetClassName(child).upper()
         )
     ]
+    verified = [child for child in candidates if win32gui.GetDlgCtrlID(child) == MESSAGE_INPUT_ID]
+    return verified or candidates
+
+
+def _transcript_handle(hwnd: int) -> int:
+    candidates = [
+        child for child in enum_children(hwnd)
+        if win32gui.IsWindowVisible(child)
+        and win32gui.GetClassName(child) == TRANSCRIPT_CLASS
+        and win32gui.GetDlgCtrlID(child) == TRANSCRIPT_ID
+    ]
+    if len(candidates) != 1:
+        raise KakaoError("대화 목록 컨트롤을 하나로 식별하지 못했습니다. `kakaocli inspect --room 방이름`을 실행하세요.")
+    return candidates[0]
 
 
 def classify_window(hwnd: int, title: str, class_name: str) -> str:
@@ -72,6 +97,28 @@ def classify_window(hwnd: int, title: str, class_name: str) -> str:
     if _input_handles(hwnd):
         return "chat"
     return "main" if title in {"", "카카오톡", "KakaoTalk"} else "popup"
+
+
+def _window_process(hwnd: int) -> tuple[int, str] | None:
+    """Resolve the owning executable, rather than trusting a window title/class."""
+    try:
+        pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+        handle = win32api.OpenProcess(0x1000, False, pid)
+        try:
+            path = ctypes.create_unicode_buffer(32768)
+            size = wintypes.DWORD(len(path))
+            query = ctypes.windll.kernel32.QueryFullProcessImageNameW
+            query.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+            query.restype = wintypes.BOOL
+            if not query(int(handle), 0, path, ctypes.byref(size)):
+                return None
+            if Path(path.value).name.casefold() != "kakaotalk.exe":
+                return None
+            return pid, path.value
+        finally:
+            handle.Close()
+    except Exception:
+        return None
 
 
 def list_windows() -> list[WindowInfo]:
@@ -84,6 +131,9 @@ def list_windows() -> list[WindowInfo]:
             title = win32gui.GetWindowText(hwnd)
             if "EVA" not in class_name and "카카오톡" not in title and "KakaoTalk" not in title:
                 return
+            process = _window_process(hwnd)
+            if process is None:
+                return
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
             result.append(
                 WindowInfo(
@@ -94,6 +144,8 @@ def list_windows() -> list[WindowInfo]:
                     height=max(0, bottom - top),
                     visible=bool(win32gui.IsWindowVisible(hwnd)),
                     kind=classify_window(hwnd, title, class_name),
+                    pid=process[0],
+                    executable=process[1],
                 )
             )
         except Exception:
@@ -122,14 +174,17 @@ def find_main_window() -> WindowInfo | None:
 
 def find_room(room: str, *, exact: bool = False) -> WindowInfo | None:
     needle = room.casefold().strip()
+    if not needle:
+        raise KakaoError("채팅방 이름은 비어 있을 수 없습니다.")
     matches = []
     for window in list_rooms():
         title = window.title.casefold().strip()
         if (exact and title == needle) or (not exact and needle in title):
             matches.append(window)
-    if len(matches) > 1 and not exact:
+    if len(matches) > 1:
         names = ", ".join(repr(item.title) for item in matches)
-        raise KakaoError(f"채팅방 이름이 여러 개와 일치합니다: {names}. --exact를 사용하세요.")
+        hint = "동일한 제목의 창을 하나만 열어 두세요." if exact else "--exact를 사용하세요."
+        raise KakaoError(f"채팅방 이름이 여러 개와 일치합니다: {names}. {hint}")
     return matches[0] if matches else None
 
 
@@ -160,24 +215,108 @@ def _press(vk: int, modifiers: tuple[int, ...] = ()) -> None:
         win32api.keybd_event(modifier, 0, win32con.KEYEVENTF_KEYUP, 0)
 
 
+def _focused_handle(hwnd: int) -> int:
+    class GuiThreadInfo(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("hwndActive", wintypes.HWND),
+            ("hwndFocus", wintypes.HWND),
+            ("hwndCapture", wintypes.HWND),
+            ("hwndMenuOwner", wintypes.HWND),
+            ("hwndMoveSize", wintypes.HWND),
+            ("hwndCaret", wintypes.HWND),
+            ("rcCaret", wintypes.RECT),
+        ]
+
+    info = GuiThreadInfo(cbSize=ctypes.sizeof(GuiThreadInfo))
+    tid = win32process.GetWindowThreadProcessId(hwnd)[0]
+    if not ctypes.windll.user32.GetGUIThreadInfo(tid, ctypes.byref(info)):
+        raise KakaoError("입력 포커스를 확인하지 못했습니다. 전송하지 않았습니다.")
+    return int(info.hwndFocus or 0)
+
+
+def _assert_process_target(hwnd: int, *, root: int | None = None, pid: int | None = None) -> int:
+    actual_root = win32gui.GetAncestor(hwnd, win32con.GA_ROOT) or hwnd
+    root = actual_root if root is None else root
+    process = _window_process(root)
+    child_process = _window_process(hwnd)
+    if (
+        actual_root != root
+        or process is None
+        or child_process is None
+        or child_process[0] != process[0]
+        or (pid is not None and process[0] != pid)
+    ):
+        raise KakaoError("입력 대상이 카카오톡 창인지 확인하지 못했습니다. 전송하지 않았습니다.")
+    return root
+
+
+def _assert_target(hwnd: int, *, root: int | None = None, pid: int | None = None) -> None:
+    root = _assert_process_target(hwnd, root=root, pid=pid)
+    if win32gui.GetForegroundWindow() != root or _focused_handle(hwnd) != hwnd:
+        raise KakaoError("카카오톡 입력 대상의 포커스가 바뀌었습니다. 전송하지 않았습니다.")
+
+
+def _assert_room_title(window: WindowInfo) -> None:
+    if win32gui.GetWindowText(window.hwnd) != window.title:
+        raise KakaoError("대상 채팅방의 제목이 바뀌었습니다. 전송하지 않았습니다.")
+
+
+def _read_input_text(hwnd: int) -> str:
+    # GetWindowText cannot read another process's edit control reliably.
+    # WM_GETTEXT is a system message, so Windows marshals its text buffer.
+    length = win32gui.SendMessage(hwnd, win32con.WM_GETTEXTLENGTH, 0, 0)
+    if length < 0 or length > 1_000_000:
+        raise KakaoError("입력창의 기존 초안을 안전하게 확인하지 못했습니다.")
+    buffer = ctypes.create_unicode_buffer(max(1024, length + 2))
+    read = ctypes.windll.user32.SendMessageW
+    read.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    read.restype = ctypes.c_ssize_t
+    copied = read(hwnd, win32con.WM_GETTEXT, len(buffer), ctypes.addressof(buffer))
+    if copied < 0 or (length and not copied) or copied >= len(buffer) - 1:
+        raise KakaoError("입력창의 기존 초안을 안전하게 확인하지 못했습니다.")
+    return buffer.value
+
+
+def _ensure_empty_input(hwnd: int) -> None:
+    if _read_input_text(hwnd):
+        raise KakaoError("입력창에 기존 초안이 있습니다. 직접 보관하거나 지운 뒤 다시 실행하세요.")
+
+
+def _same_text(actual: str, expected: str) -> bool:
+    # RichEdit may expose LF, CRLF, or CR for the same displayed line breaks.
+    return actual.replace("\r\n", "\n").replace("\r", "\n") == expected.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _set_text(hwnd: int, text: str) -> bool:
+    _assert_target(hwnd)
+    _ensure_empty_input(hwnd)
     win32gui.SendMessage(hwnd, win32con.WM_SETTEXT, 0, text)
-    if win32gui.GetWindowText(hwnd) == text:
+    actual = _read_input_text(hwnd)
+    if _same_text(actual, text):
         return True
+    if actual:
+        return False
 
     # Recent KakaoTalk RichEdit controls can reject WM_SETTEXT while still
     # accepting the normal RichEdit replace-selection operation.
-    win32gui.SendMessage(hwnd, win32con.EM_SETSEL, 0, -1)
+    _assert_target(hwnd)
+    _ensure_empty_input(hwnd)
     win32gui.SendMessage(hwnd, win32con.EM_REPLACESEL, True, text)
-    if win32gui.GetWindowText(hwnd) == text:
+    actual = _read_input_text(hwnd)
+    if _same_text(actual, text):
         return True
+    if actual:
+        return False
 
-    _focus(hwnd)
-    _press(ord("A"), (win32con.VK_CONTROL,))
-    # KakaoTalk intentionally returns an empty value for this control even
-    # while typed text is visibly present. SendInput's accepted-event count is
-    # therefore the only programmatic confirmation available before Enter.
-    return _send_unicode_input(text)
+    # Never select-all and overwrite a draft. A fallback may type only into an
+    # empty, verified control; accepted key events alone do not confirm text.
+    _assert_target(hwnd)
+    _ensure_empty_input(hwnd)
+    if not _send_unicode_input(text):
+        return False
+    return _same_text(_read_input_text(hwnd), text)
 
 
 def _send_unicode_input(text: str) -> bool:
@@ -234,10 +373,9 @@ def _send_unicode_input(text: str) -> bool:
     return sent == len(inputs)
 
 
-def open_room(room: str, *, exact: bool = False, timeout: float = 3.0) -> WindowInfo:
+def _resolve_room(room: str, *, exact: bool) -> WindowInfo:
     existing = find_room(room, exact=exact)
     if existing:
-        _focus(existing.hwnd)
         return existing
 
     raise KakaoError(
@@ -246,22 +384,56 @@ def open_room(room: str, *, exact: bool = False, timeout: float = 3.0) -> Window
     )
 
 
-def send_message(room: str, message: str, *, exact: bool = False) -> WindowInfo:
-    if not message:
-        raise KakaoError("빈 메시지는 전송할 수 없습니다.")
-    window = open_room(room, exact=exact)
-    inputs = _input_handles(window.hwnd)
-    if not inputs:
-        raise KakaoError("메시지 입력창을 찾지 못했습니다.")
+def open_room(room: str, *, exact: bool = False, timeout: float = 3.0) -> WindowInfo:
+    window = _resolve_room(room, exact=exact)
+    _focus(window.hwnd)
+    return window
 
-    input_hwnd = inputs[-1]
+
+def _prepare_send(room: str, *, exact: bool = True) -> tuple[WindowInfo, int]:
+    """Resolve and inspect the target without focusing or changing the UI."""
+    window = _resolve_room(room, exact=exact)
+    inputs = [
+        hwnd for hwnd in _input_handles(window.hwnd)
+        if win32gui.GetDlgCtrlID(hwnd) == MESSAGE_INPUT_ID
+    ]
+    if len(inputs) != 1:
+        raise KakaoError("메시지 입력창(ID 1006)을 하나로 식별하지 못했습니다.")
+    input_hwnd = inputs[0]
+    _assert_process_target(input_hwnd, root=window.hwnd, pid=window.pid)
+    _ensure_empty_input(input_hwnd)
+    _assert_room_title(window)
+    return window, input_hwnd
+
+
+def preview_send(room: str, *, exact: bool = True) -> dict:
+    window, input_hwnd = _prepare_send(room, exact=exact)
+    return {
+        "target_ready": True,
+        "draft_present": False,
+        "target": window.to_dict(),
+        "input_hwnd": hex(input_hwnd),
+    }
+
+
+def send_message(room: str, message: str, *, exact: bool = True) -> WindowInfo:
+    if not message.strip() or "\x00" in message:
+        raise KakaoError("빈 메시지는 전송할 수 없습니다.")
+    window, input_hwnd = _prepare_send(room, exact=exact)
     _focus(input_hwnd)
+    _assert_target(input_hwnd, root=window.hwnd, pid=window.pid)
+    _ensure_empty_input(input_hwnd)
+    _assert_room_title(window)
     if not _set_text(input_hwnd, message):
         raise KakaoError("메시지 입력에 실패했습니다. 전송하지 않았습니다.")
+    _assert_target(input_hwnd, root=window.hwnd, pid=window.pid)
+    if not _same_text(_read_input_text(input_hwnd), message):
+        raise KakaoError("입력 내용이 전송 직전에 바뀌었습니다. 전송하지 않았습니다.")
+    _assert_room_title(window)
     _press(win32con.VK_RETURN)
     time.sleep(0.2)
-    remaining = win32gui.GetWindowText(input_hwnd)
-    if remaining == message:
+    remaining = _read_input_text(input_hwnd)
+    if remaining:
         raise KakaoError("Enter 입력 후에도 메시지가 남아 있습니다. 전송 여부를 직접 확인하세요.")
     return window
 
@@ -270,22 +442,12 @@ def read_visible(room: str, *, exact: bool = False, timeout: float = 1.5) -> tup
     import win32clipboard
 
     window = open_room(room, exact=exact)
-    list_candidates = [
-        child
-        for child in enum_children(window.hwnd)
-        if "LIST" in win32gui.GetClassName(child).upper()
-    ]
-    if not list_candidates:
-        raise KakaoError("대화 목록 컨트롤을 찾지 못했습니다. `kakaocli inspect --room`을 실행하세요.")
-
-    target = max(
-        list_candidates,
-        key=lambda hwnd: max(0, win32gui.GetWindowRect(hwnd)[2] - win32gui.GetWindowRect(hwnd)[0])
-        * max(0, win32gui.GetWindowRect(hwnd)[3] - win32gui.GetWindowRect(hwnd)[1]),
-    )
+    target = _transcript_handle(window.hwnd)
     _focus(target)
+    _assert_target(target, root=window.hwnd, pid=window.pid)
     sequence = ctypes.windll.user32.GetClipboardSequenceNumber()
     _press(ord("A"), (win32con.VK_CONTROL,))
+    _assert_target(target, root=window.hwnd, pid=window.pid)
     _press(ord("C"), (win32con.VK_CONTROL,))
 
     deadline = time.monotonic() + timeout
@@ -320,6 +482,7 @@ def inspect_tree(room: str | None = None) -> list[dict]:
             {
                 "hwnd": hex(child),
                 "class_name": win32gui.GetClassName(child),
+                "control_id": win32gui.GetDlgCtrlID(child),
                 "text": win32gui.GetWindowText(child),
                 "visible": bool(win32gui.IsWindowVisible(child)),
                 "rect": [left, top, right, bottom],
