@@ -96,9 +96,12 @@ def test_find_room_exact_match(monkeypatch):
     assert backend.find_room("개발팀", exact=True) == expected
 
 
-def test_open_room_requires_manual_open_when_not_found(monkeypatch):
+def test_open_room_propagates_search_failure(monkeypatch):
     monkeypatch.setattr(backend, "list_rooms", lambda: [])
-    with pytest.raises(KakaoError, match="직접 독립 창으로"):
+    def unavailable(*args, **kwargs):
+        raise KakaoError("검색 결과가 모호합니다.")
+    monkeypatch.setattr("kakaocli_win.background.ensure_room", unavailable)
+    with pytest.raises(KakaoError, match="검색 결과가 모호"):
         backend.open_room("개발팀", exact=True)
 
 
@@ -164,14 +167,14 @@ def test_noninteractive_send_requires_explicit_yes(monkeypatch, capsys):
 def test_input_submission_does_not_claim_delivery(monkeypatch, capsys):
     calls = []
 
-    def submit(room, message, *, exact):
-        calls.append((room, message, exact))
+    def submit(room, message, *, exact, interactive):
+        calls.append((room, message, exact, interactive))
         return make_window(room, 1)
 
     monkeypatch.setattr(cli, "send_message", submit)
     assert cli.main(["send", "친구", "메시지", "--yes", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert calls == [("친구", "메시지", True)]
+    assert calls == [("친구", "메시지", True, False)]
     assert result["submitted"] is True
     assert result["delivery_confirmed"] is False
     assert "sent" not in result

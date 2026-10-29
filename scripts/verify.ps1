@@ -6,7 +6,7 @@ if (-not (Test-Path -LiteralPath $Python)) {
     throw ".venv가 없습니다. 먼저 install.ps1을 실행하세요."
 }
 
-& $Python -m pytest
+& $Python -m pytest tests macos/tests linux/tests
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

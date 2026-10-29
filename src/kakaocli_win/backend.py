@@ -190,6 +190,7 @@ def find_room(room: str, *, exact: bool = False) -> WindowInfo | None:
 
 def _focus(hwnd: int) -> None:
     root = win32gui.GetAncestor(hwnd, win32con.GA_ROOT) or hwnd
+    _assert_window_enabled(root)
     win32gui.ShowWindow(root, win32con.SW_SHOW)
     win32gui.ShowWindow(root, win32con.SW_RESTORE)
     current_tid = win32api.GetCurrentThreadId()
@@ -204,6 +205,7 @@ def _focus(hwnd: int) -> None:
     finally:
         if attached:
             ctypes.windll.user32.AttachThreadInput(current_tid, target_tid, False)
+    _wait_for_focus(hwnd, root=root)
 
 
 def _press(vk: int, modifiers: tuple[int, ...] = ()) -> None:
@@ -256,6 +258,32 @@ def _assert_target(hwnd: int, *, root: int | None = None, pid: int | None = None
     root = _assert_process_target(hwnd, root=root, pid=pid)
     if win32gui.GetForegroundWindow() != root or _focused_handle(hwnd) != hwnd:
         raise KakaoError("카카오톡 입력 대상의 포커스가 바뀌었습니다. 전송하지 않았습니다.")
+
+
+def _assert_window_enabled(hwnd: int) -> None:
+    if not win32gui.IsWindowEnabled(hwnd):
+        raise KakaoError("카카오톡 창에 모달 대화상자가 열려 있습니다. 저장 또는 닫기를 먼저 완료하세요.")
+
+
+def _wait_for_focus(hwnd: int, *, root: int, timeout: float = 0.8) -> None:
+    """Allow activation to settle before any input, without reissuing input."""
+    deadline = time.monotonic() + timeout
+    stable_since: float | None = None
+    while True:
+        _assert_process_target(hwnd, root=root)
+        _assert_window_enabled(root)
+        now = time.monotonic()
+        foreground = win32gui.GetForegroundWindow() == root
+        focused = hwnd == root or _focused_handle(hwnd) == hwnd
+        if foreground and focused:
+            stable_since = now if stable_since is None else stable_since
+            if now - stable_since >= 0.05:
+                return
+        else:
+            stable_since = None
+        if now >= deadline:
+            raise KakaoError("카카오톡 대상 창의 포커스가 안정되지 않았습니다. 입력하지 않았습니다.")
+        time.sleep(min(0.025, deadline - now))
 
 
 def _assert_room_title(window: WindowInfo) -> None:
@@ -378,20 +406,20 @@ def _resolve_room(room: str, *, exact: bool) -> WindowInfo:
     if existing:
         return existing
 
-    raise KakaoError(
-        f"안전한 자동 검색을 지원하지 않는 카카오톡 버전입니다. "
-        f"PC 카카오톡에서 {room!r} 방을 직접 독립 창으로 연 뒤 다시 실행하세요."
-    )
+    from .background import ensure_room
+
+    return ensure_room(room, exact=exact)
 
 
-def open_room(room: str, *, exact: bool = False, timeout: float = 3.0) -> WindowInfo:
+def open_room(room: str, *, exact: bool = False, timeout: float = 3.0, interactive: bool = False) -> WindowInfo:
     window = _resolve_room(room, exact=exact)
-    _focus(window.hwnd)
+    if interactive:
+        _focus(window.hwnd)
     return window
 
 
 def _prepare_send(room: str, *, exact: bool = True) -> tuple[WindowInfo, int]:
-    """Resolve and inspect the target without focusing or changing the UI."""
+    """Resolve and inspect the target without focusing or changing its draft."""
     window = _resolve_room(room, exact=exact)
     inputs = [
         hwnd for hwnd in _input_handles(window.hwnd)
@@ -416,9 +444,13 @@ def preview_send(room: str, *, exact: bool = True) -> dict:
     }
 
 
-def send_message(room: str, message: str, *, exact: bool = True) -> WindowInfo:
+def send_message(room: str, message: str, *, exact: bool = True, interactive: bool = False) -> WindowInfo:
     if not message.strip() or "\x00" in message:
         raise KakaoError("빈 메시지는 전송할 수 없습니다.")
+    if not interactive:
+        from .background import send_message as background_send
+
+        return background_send(room, message, exact=exact)
     window, input_hwnd = _prepare_send(room, exact=exact)
     _focus(input_hwnd)
     _assert_target(input_hwnd, root=window.hwnd, pid=window.pid)
@@ -438,7 +470,11 @@ def send_message(room: str, message: str, *, exact: bool = True) -> WindowInfo:
     return window
 
 
-def read_visible(room: str, *, exact: bool = False, timeout: float = 1.5) -> tuple[WindowInfo, str]:
+def read_visible(room: str, *, exact: bool = False, timeout: float = 1.5, interactive: bool = False) -> tuple[WindowInfo, str]:
+    if not interactive:
+        from .background import read_visible as background_read
+
+        return background_read(room, exact=exact, timeout=timeout)
     import win32clipboard
 
     window = open_room(room, exact=exact)

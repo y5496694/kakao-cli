@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,20 @@ def _positive_int(value: str) -> int:
     return result
 
 
+def _positive_float(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise argparse.ArgumentTypeError("0보다 큰 유한한 값을 입력하세요.")
+    return result
+
+
+def _max_chars(value: str) -> int:
+    result = _positive_int(value)
+    if result > 1000000:
+        raise argparse.ArgumentTypeError("최대 1000000자까지 추출할 수 있습니다.")
+    return result
+
+
 def _submitted_result(window, message: str) -> dict:
     return {
         "submitted": True,
@@ -109,29 +124,61 @@ def build_parser() -> argparse.ArgumentParser:
     command("windows", help="감지된 카카오톡 창 출력")
     command("rooms", help="현재 독립 창으로 열린 채팅방 출력")
 
-    open_parser = command("open", help="독립 창으로 열린 채팅방 선택")
+    open_parser = command("open", help="채팅방 검색 및 백그라운드 열기")
     open_parser.add_argument("room")
     open_parser.add_argument("--exact", action="store_true")
+    open_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
 
     read_parser = command("read", help="열린 화면에 보이는 대화 복사")
     read_parser.add_argument("room")
     read_parser.add_argument("--exact", action="store_true")
+    read_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
 
     for name, help_text in (("messages", "로드된 UI 대화를 구조화해 조회"), ("search", "로드된 UI 대화 내용 검색")):
         messages_parser = command(name, help=help_text)
         messages_parser.add_argument("room")
         messages_parser.add_argument("--exact", action="store_true")
+        messages_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
         messages_parser.add_argument("--limit", type=_positive_int, default=50)
         if name == "search":
             messages_parser.add_argument("query", help="메시지 내용에 포함된 문자열")
         else:
             messages_parser.add_argument("--contains", help="메시지 내용에 포함된 문자열")
 
+    attachments_parser = command("attachments", help="로드된 대화의 첨부 항목 조회")
+    attachments_parser.add_argument("room", help="채팅방의 정확한 제목")
+    attachments_parser.add_argument("--limit", type=_positive_int, default=50)
+    attachments_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
+
+    capture_parser = command("capture", help="지정 채팅방 화면을 이미지로 저장")
+    capture_parser.add_argument("room", help="채팅방의 정확한 제목")
+    capture_parser.add_argument("--output", required=True, help="저장할 이미지 경로")
+    capture_parser.add_argument("--scroll", choices=("up", "down", "top", "bottom"), help="캡처 전 대화 목록 스크롤")
+
+    download_parser = command("download", help="지정 채팅방의 사진 또는 파일 다운로드")
+    download_parser.add_argument("room", help="채팅방의 정확한 제목")
+    download_mode = download_parser.add_mutually_exclusive_group()
+    download_mode.add_argument("--at", nargs=2, type=int, metavar=("X", "Y"), help="첨부 항목의 좌표")
+    download_mode.add_argument("--viewer", dest="mode", action="store_const", const="viewer", help="열린 사진 뷰어에서 저장(기본값)")
+    download_mode.add_argument("--dialog", dest="mode", action="store_const", const="dialog", help="열린 저장 대화상자에서 저장")
+    download_parser.set_defaults(mode="viewer")
+    download_parser.add_argument("--kind", choices=("image", "file"), default="image")
+    download_parser.add_argument("--output-dir", help="다운로드할 폴더")
+    download_parser.add_argument("--filename", help="저장할 파일 이름")
+    download_parser.add_argument("--timeout", type=_positive_float, default=20.0, help="저장 대기 시간(초)")
+    download_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
+
+    analyze_parser = command("analyze", help="다운로드한 로컬 사진 또는 파일 분석")
+    analyze_parser.add_argument("path", help="분석할 로컬 파일 경로")
+    analyze_parser.add_argument("--output-dir", help="분석 결과를 저장할 폴더")
+    analyze_parser.add_argument("--max-chars", type=_max_chars, default=20000, help="추출할 최대 문자 수")
+
     send_parser = command("send", help="채팅방에 메시지 전송")
     send_parser.add_argument("room")
     _message_arguments(send_parser)
     send_parser.add_argument("--exact", action="store_true", default=True, help="방 제목 완전 일치(기본값)")
     send_parser.add_argument("--yes", action="store_true", help="확인 질문 생략")
+    send_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
     send_parser.add_argument("--dry-run", action="store_true", help="대상과 내용을 출력하고 전송하지 않음")
 
     send_self_parser = command(
@@ -139,6 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _message_arguments(send_self_parser)
     send_self_parser.add_argument("--yes", action="store_true", help="확인 질문 생략")
+    send_self_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
     send_self_parser.add_argument(
         "--dry-run", action="store_true", help="대상과 내용을 출력하고 전송하지 않음"
     )
@@ -190,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command in {"attachments", "capture", "download"} and not args.room.strip():
+            raise KakaoError("채팅방 이름은 비어 있을 수 없습니다.")
         if args.command == "doctor":
             result = doctor()
         elif args.command == "start":
@@ -199,16 +249,43 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "rooms":
             result = [window.to_dict() for window in list_rooms()]
         elif args.command == "open":
-            result = {"opened": open_room(args.room, exact=args.exact).to_dict()}
+            result = {"opened": open_room(args.room, exact=args.exact, interactive=args.interactive).to_dict()}
         elif args.command == "read":
-            window, text = read_visible(args.room, exact=args.exact)
+            window, text = read_visible(args.room, exact=args.exact, interactive=args.interactive)
             result = {"room": window.title, "text": text, "coverage": "loaded_ui_only", "complete_history": False}
         elif args.command in {"messages", "search"}:
             contains = args.query if args.command == "search" else args.contains
             if contains is not None and not contains.strip():
                 raise KakaoError("검색 문자열은 비어 있을 수 없습니다.")
-            window, text = read_visible(args.room, exact=args.exact)
+            window, text = read_visible(args.room, exact=args.exact, interactive=args.interactive)
             result = {"room": window.title, **loaded_messages(text, contains=contains, limit=args.limit)}
+        elif args.command == "attachments":
+            from .attachments import list_attachments
+
+            result = list_attachments(args.room, limit=args.limit, interactive=args.interactive)
+        elif args.command == "capture":
+            from .attachments import capture_room
+
+            result = capture_room(args.room, output=args.output, scroll=args.scroll)
+        elif args.command == "download":
+            from .attachments import download_attachment
+
+            result = download_attachment(
+                args.room,
+                point=tuple(args.at) if args.at is not None else None,
+                mode="point" if args.at is not None else args.mode,
+                kind=args.kind,
+                output_directory=args.output_dir,
+                filename=args.filename,
+                timeout=args.timeout,
+                interactive=args.interactive,
+            )
+        elif args.command == "analyze":
+            from .attachment_analysis import analyze_attachment
+
+            result = analyze_attachment(
+                args.path, output_directory=args.output_dir, max_chars=args.max_chars,
+            )
         elif args.command == "inspect":
             result = inspect_tree(args.room)
         elif args.command == "recover-key":
@@ -346,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not confirm_send(room, message, skip=args.yes):
                     emit({"sent": False, "cancelled": True}, as_json=args.json)
                     return 2
-                window = send_message(room, message, exact=True)
+                window = send_message(room, message, exact=True, interactive=args.interactive)
                 result = _submitted_result(window, message)
         elif args.command == "send":
             if not args.room.strip():
@@ -361,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not confirm_send(args.room, message, skip=args.yes):
                     emit({"sent": False, "cancelled": True}, as_json=args.json)
                     return 2
-                window = send_message(args.room, message, exact=True)
+                window = send_message(args.room, message, exact=True, interactive=args.interactive)
                 result = _submitted_result(window, message)
         else:
             parser.error("알 수 없는 명령")

@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path -LiteralPath $Root).Path
 $ForbiddenFiles = @(".env", "keys.json")
 $ForbiddenExtensions = @(".edb", ".db", ".sqlite", ".sqlite3", ".pyc", ".pfx", ".p12")
-$TextExtensions = @(".py", ".ps1", ".cmd", ".md", ".toml", ".yaml", ".yml", ".json", ".txt")
+$TextExtensions = @(".py", ".ps1", ".cmd", ".md", ".toml", ".yaml", ".yml", ".json", ".txt", ".js", ".mjs", ".sh", ".service")
 $Patterns = [ordered]@{
     "Windows user path" = 'C:\\Users\\[^\\\s]+'
     "GitHub token" = '(ghp_|github_pat_)[A-Za-z0-9_]+'
@@ -15,7 +15,15 @@ $Patterns = [ordered]@{
 }
 
 $Findings = [System.Collections.Generic.List[string]]::new()
-$Files = Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object {
+$CandidateFiles = if (Test-Path -LiteralPath (Join-Path $Root '.git')) {
+    git -C $Root ls-files --cached --others --exclude-standard | ForEach-Object {
+        $Candidate = Join-Path $Root $_
+        if (Test-Path -LiteralPath $Candidate -PathType Leaf) { Get-Item -LiteralPath $Candidate }
+    }
+} else {
+    Get-ChildItem -LiteralPath $Root -Recurse -File
+}
+$Files = $CandidateFiles | Where-Object {
     $_.FullName -notmatch '[\\/]\.git[\\/]' -and
     $_.FullName -notmatch '[\\/](\.venv|__pycache__|\.pytest_cache|dist|build)[\\/]'
 }

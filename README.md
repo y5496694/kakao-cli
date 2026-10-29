@@ -1,219 +1,156 @@
-# kakaocli-win
+# kakao-cli 0.5.0
 
-## 이 PC의 REA 기반 확장 — 0.4.0
+Windows 10/11의 실행 중인 PC 카카오톡을 로컬 CLI로 조회하고 메시지와 첨부파일을 처리합니다. `read`, `messages`, `search`, `send`, `download`는 기본적으로 백그라운드에서 동작합니다. 별도 [macOS 전용 버전](macos/README.md)도 포함하며, 실제 macOS 카카오톡에서는 아직 검증하지 않았습니다.
 
-이 로컬 버전은 [morluto/rea](https://github.com/morluto/rea) 6.8.0으로 설치된
-카카오톡 26.9.0.5337을 분석하고, 아래 원본 CLI를 보완했습니다.
-REA PE/Rizin 정적 분석과 Frida 런타임 관찰을 수행했습니다.
-런타임에서 확인한 입력 컨트롤은 `RICHEDIT50W / 1006`, 대화 목록은
-`EVA_VH_ListControl_Dblclk / 100`입니다. [분석 근거와 범위](ANALYSIS.md)를 참고하세요.
+Linux/Ubuntu 서버에서는 [linux/](linux/README.md)의 자체 실행형을 사용합니다. 서버 내부의 전용 Wine 환경과 Xvfb 가상 화면에서 카카오톡 자체를 실행하므로 외부 Windows PC와 SSH가 필요하지 않습니다. Windows 카카오톡을 Wine으로 실행하는 호환 방식이며, 최초 계정 인증과 해당 Wine 버전의 호환성 확인이 필요합니다.
 
-이 PC의 실행기: `D:\Codex\bin\kakao.cmd`
-
-```powershell
-& 'D:\Codex\bin\kakao.cmd' doctor --json
-& 'D:\Codex\bin\kakao.cmd' rooms --json
-& 'D:\Codex\bin\kakao.cmd' messages '방 제목' --exact --limit 30 --json
-& 'D:\Codex\bin\kakao.cmd' search '방 제목' '회의' --exact --json
-& 'D:\Codex\bin\kakao.cmd' send '방 제목' --message-file 'D:\Codex\tmp\message.txt' --dry-run --json
-# 사용자가 실제 전송을 지시한 대상과 문안에 대해 실행
-& 'D:\Codex\bin\kakao.cmd' send '방 제목' --message-file 'D:\Codex\tmp\message.txt' --yes --json
-```
-
-- 읽기·검색은 독립 창으로 열린 방의 UI에 로드된 내용만 다룹니다.
-  전체 과거 기록은 보장하지 않으며 `coverage=loaded_ui_only`를 반환합니다.
-- 닫힌 방 자동 검색·열기는 지원하지 않습니다. `open`은 이미 열린 방을 선택합니다.
-- `--json`은 하위 명령 앞뒤에 쓸 수 있습니다.
-- 전송은 제목 완전 일치입니다. 같은 제목의 창이 여러 개면 거부합니다.
-- `--message-file` 또는 `--stdin`으로 UTF-8 다중행 문안을 입력할 수 있습니다.
-- `--dry-run`은 대상·입력창·기존 초안을 읽기만 합니다. 포커스 이동이나 입력은 하지 않습니다.
-- 기존 초안을 덮어쓰지 않으며, 전송 직전 프로세스·포커스·입력 내용이 맞는지 검사합니다.
-- 전송 결과 `submitted_unconfirmed`는 Enter 제출 관찰입니다. 서버 전달·상대방 수신 확인은 아닙니다.
-- 비대화형 실행에서 `--yes` 없이 실제 전송하면 명시적으로 실패합니다.
-- 실행기는 데이터 경로를 `D:\Codex\apps\kakao-cli`, 임시 경로를 `D:\Codex\tmp`로 설정합니다.
-  키는 DPAPI 암호화 저장이며, 일반 UI 읽기·전송에는 DB 키 복구가 필요하지 않습니다.
-
-REA 분석 재현:
-
-```powershell
-# 정적 PE/섹션 분석
-.\scripts\rea-kakao.ps1
-# 실행 중인 카카오톡 컨트롤 구조 관찰: Frida 스크립트 로드 후 해제
-.\scripts\rea-kakao.ps1 -Runtime
-```
-
-`-Runtime` 스크립트는 메시지 본문·방 이름을 수집하지 않고 컨트롤 클래스·ID와
-정해진 프로그램 문자열의 주소만 반환합니다. UI 입력·메시지 전송·후킹은 하지 않습니다.
-분석 결과는 `work/rea` 아래에 보관되며 Git에서 제외됩니다.
-
-아래는 기반 프로젝트의 설명입니다. 기반 소스와 MIT 라이선스를 유지했습니다.
-
-Windows 10/11용 비공식 카카오톡 CLI입니다. 카카오 공식 API나 프로토콜을 사용하지 않고, 실행 중인 PC 카카오톡 창을 Win32 API로 조작합니다.
-
-## 현재 지원 범위
-
-- 카카오톡 설치·실행 상태 점검
-- 현재 독립 창으로 열린 채팅방 목록
-- 이미 독립 창으로 열린 채팅방 포커스
-- 화면에 로드된 대화 텍스트 읽기
-- 확인 후 메시지 전송
-- 자동화용 JSON 출력
-- 카카오톡 업데이트 호환성 진단용 컨트롤 트리 출력
-- 실행 중인 `KakaoTalk.exe` 메모리에서 SQLCipher 4 raw key 후보 복구
-- 검증된 키를 Windows DPAPI로 보호해 로컬 저장
-- 저장된 키로 `TalkUserDB.edb`를 임시 복호화해 친구 목록 조회
-- 저장된 별도 키로 `chatListInfo.edb`의 채팅방 메타데이터 조회(메시지 본문 제외)
-
-`read`는 카카오톡 화면에 현재 로드된 대화만 대상으로 합니다. `friends`와 `chat-rooms`는 각각 친구 및 채팅방 메타데이터 DB를 읽지만, 메시지 본문은 읽지 않습니다. 카카오톡 UI가 변경되면 `inspect` 결과를 바탕으로 선택자를 조정해야 할 수 있습니다.
+이 버전은 [morluto/rea](https://github.com/morluto/rea) 6.8.0과 Frida로 Windows 카카오톡 **26.9.0.5337 / x64**를 분석·검증했습니다. 내부 컨트롤과 API에 의존하므로 다른 카카오톡 버전에서 같은 동작을 보장하지 않습니다. [분석 근거와 검증 범위](ANALYSIS.md)를 확인하세요. 카카오와 제휴된 프로젝트가 아닙니다.
 
 ## 설치
 
-요구 사항:
-
-- Windows 10 또는 11
-- Python 3.10 이상
-- PC 카카오톡 설치 및 로그인
-
-PowerShell에서 이 폴더로 이동한 뒤 실행합니다.
+Windows에서는 Python 3.10 이상, 로그인된 PC 카카오톡, REA 6.8.0의 Frida 런타임이 필요합니다.
 
 ```powershell
+git clone https://github.com/y5496694/kakao-cli.git
+cd kakao-cli
 Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
-.\kakaocli.cmd doctor
+./install.ps1
+./.venv/Scripts/python.exe -m pip install -e '.[analysis]'
 ```
 
-GitHub에서 바로 설치하려면 다음처럼 복제할 수 있습니다.
+REA 런타임이 별도로 설치되어 있다면 아래 환경변수로 실행 파일을 지정합니다. 경로는 각 설치 위치에 맞게 바꾸세요.
 
 ```powershell
-git clone https://github.com/Lee-SiHyeon/kakaocli-win.git
-cd kakaocli-win
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
+$env:KAKAOCLI_REA_NODE = (Get-Command node).Source
+$env:KAKAOCLI_REA_ENTRY = (Resolve-Path './tools/rea/node_modules/rea-agents/scripts/rea.mjs').Path
+./kakaocli.cmd doctor --json
 ```
 
-## 사용법
+`KAKAOCLI_REA_ENTRY`는 설치한 `rea-agents`의 `scripts/rea.mjs` 경로입니다. REA 자체는 [공식 저장소](https://github.com/morluto/rea)의 설치 방법을 따르세요. 백그라운드 런타임이 없으면 작업을 실패로 반환합니다.
+
+이미지 검증·캡처에는 Pillow, PDF 텍스트·미리보기에는 pypdf와 PyMuPDF, XLSX 추출에는 openpyxl을 사용합니다. Windows OCR은 설치된 Windows 언어 인식기를 사용하며 새 모델이나 언어팩을 다운로드하지 않습니다.
+
+## 대화 조회와 메시지 전송
 
 ```powershell
-# 카카오톡 실행
-.\kakaocli.cmd start
-
-# 준비 상태 점검
-.\kakaocli.cmd doctor
-
-# 열린 채팅방 확인
-.\kakaocli.cmd rooms
-
-# 이미 독립 창으로 열린 채팅방 포커스
-.\kakaocli.cmd open "홍길동"
-
-# 화면에 로드된 대화 읽기
-.\kakaocli.cmd read "홍길동"
-
-# 실제 전송 전 점검
-.\kakaocli.cmd send "홍길동" "테스트입니다" --dry-run
-
-# 확인 질문을 거쳐 전송
-.\kakaocli.cmd send "홍길동" "테스트입니다"
-
-# 스크립트에서 사용: 정확한 방 이름 + 확인 질문 생략 + JSON
-.\kakaocli.cmd --json send "홍길동" "테스트입니다" --exact --yes
-
-# 최신 TalkUserDB.edb 키 복구 및 DPAPI 저장
-.\kakaocli.cmd --json recover-key
-
-# 특정 DB 키 복구
-.\kakaocli.cmd --json recover-key --db "$env:LOCALAPPDATA\Kakao\KakaoTalk\users\사용자폴더\chat_data\chatListInfo.edb"
-
-# 키 원문 없이 저장 상태와 지문 확인
-.\kakaocli.cmd --json key-status
-
-# GUI 자동화 없이 친구 DB 검색
-.\kakaocli.cmd friends --contains "vs"
-
-# 자동화용 JSON
-.\kakaocli.cmd --json friends --contains "vs"
-
-# GUI 자동화 없이 DB에서 채팅방 제목 검색
-.\kakaocli.cmd chat-rooms --contains "바다"
-
-# 종류·개수 필터와 메타데이터 JSON 출력
-.\kakaocli.cmd --json chat-rooms --type MultiChat --limit 20
-
-# DB에 캐시된 참여자 이름·전화번호를 로컬 CSV로 저장
-.\kakaocli.cmd --json export-room-contacts "모임방" --exact --output ".\contacts.csv"
-
-# 방 표시 인원보다 캐시가 적다는 경고를 확인한 뒤 부분 목록 저장
-.\kakaocli.cmd export-room-contacts "모임방" --exact --output ".\contacts.csv" --allow-partial
-
-# DB에서 나와의 채팅(MemoChat)을 식별한 뒤 전송 전 점검
-.\kakaocli.cmd --json send-self "나에게 남길 메모" --dry-run
-
-# 확인 질문을 거쳐 나와의 채팅으로 전송
-.\kakaocli.cmd send-self "나에게 남길 메모"
-
-# 데이터 행을 노출하지 않고 DB 테이블·열·행 수만 확인
-.\kakaocli.cmd --json db-schema
+./kakaocli.cmd rooms --json
+./kakaocli.cmd open '예시 채팅방' --exact --json
+./kakaocli.cmd messages '예시 채팅방' --exact --limit 30 --json
+./kakaocli.cmd search '예시 채팅방' '회의' --exact --json
+./kakaocli.cmd send '예시 채팅방' --message-file './message.txt' --dry-run --json
+# 사용자가 지정한 상대와 문안으로 실제 전송
+./kakaocli.cmd send '예시 채팅방' --message-file './message.txt' --yes --json
 ```
 
-동일한 문자열이 들어간 방이 여러 개면 전송을 중단합니다. 자동화에서는 완전한 채팅방 이름과 `--exact` 사용을 권장합니다.
+닫힌 방은 카카오톡의 채팅 목록 검색으로 찾습니다. 검색 결과를 창 캡처와 로컬 Windows OCR로 읽고, 요청과 일치하는 표시 제목을 **한 개로 확인한 경우에만** 해당 결과를 엽니다. 열린 창의 실제 제목이 그 표시 제목과 완전히 같은지 다시 검사합니다. 짧은 이름이 더 긴 표시 이름에 포함된 경우에도 이 과정을 거치며, 후보가 여러 개이거나 OCR·창 제목 검증이 실패하면 임의로 전송하지 않습니다. 사용 전 방이 이미 독립 창으로 열려 있어야 하는 것은 아닙니다.
 
-## 문제 해결
+검색과 방 열기는 카카오톡 내부 상태를 바꿀 수 있지만, 기본 동작은 현재 작업 중인 앱의 포커스나 최상단 창을 바꾸지 않도록 구현했습니다. 전역 키보드·마우스 입력 대신 해당 카카오톡 프로세스의 컨트롤 메시지와 일시적인 가상 입력 상태를 사용하고, 작업 후 Frida 연결과 후킹을 해제합니다. 지원되는 결과에는 `background`와 `foreground_unchanged`가 포함됩니다.
 
-`doctor`가 메인 창을 찾지 못하면 카카오톡에 로그인하고 메인 창을 열어 둡니다. 관리자 권한으로 카카오톡을 실행했다면 CLI도 같은 권한 수준으로 실행해야 Windows가 입력을 허용합니다.
+- `read`, `messages`, `search`는 현재 UI에 로드된 대화만 읽습니다. `coverage=loaded_ui_only`, `complete_history=false`이며 전체 과거 기록 검색을 뜻하지 않습니다.
+- 백그라운드 대화 복사도 Windows 클립보드를 변경합니다. 다른 앱이 동시에 클립보드를 바꾸면 읽기를 중단합니다.
+- `--message-file`과 `--stdin`은 UTF-8 다중행 문안을 받습니다. 기존 초안을 덮어쓰지 않고 입력한 내용을 다시 읽어 확인합니다.
+- `--dry-run`은 메시지를 입력하거나 제출하지 않습니다. 비대화형 실제 전송에는 `--yes`가 필요합니다.
+- `submitted_unconfirmed`는 카카오톡 입력란에 대한 제출을 확인했다는 뜻입니다. 서버 전달이나 상대방 수신을 확정하지 않습니다. 불명확한 실패나 타임아웃 뒤에는 자동으로 재전송하지 마세요.
+- 같은 이름의 대상이 여러 개이거나 저장 모달창이 작업을 막으면 먼저 해당 상태를 해결해야 합니다.
+- `--json`은 하위 명령 앞뒤에 사용할 수 있습니다.
 
-카카오톡은 버전에 따라 내부 컨트롤 클래스가 달라질 수 있습니다. 아래 결과를 파일로 저장하면 선택자 조정에 사용할 수 있습니다.
+## 사진과 파일 받기
 
-현재 확인된 카카오톡 버전에서는 친구 탭의 `Ctrl+F`가 검색이 아니라 친구 추가를 열기 때문에, 닫힌 채팅방을 CLI가 자동 검색하지 않습니다. 읽기나 전송 전 PC 카카오톡에서 대상 방을 직접 독립 창으로 열어 두세요.
+`attachments`는 로드된 대화에서 사진·파일 표시를 찾습니다. `capture`는 대상 창을 `PrintWindow`로 캡처하며 현재 화면의 전경 창을 바꾸지 않습니다. 캡처는 첨부 원본 파일과 구분되는 화면 이미지입니다.
 
 ```powershell
-.\kakaocli.cmd --json inspect > main-controls.json
-.\kakaocli.cmd --json inspect --room "홍길동" > room-controls.json
+./kakaocli.cmd attachments '예시 채팅방' --limit 20 --json
+./kakaocli.cmd capture '예시 채팅방' --output './work/chat.png' --json
+
+# 캡처에서 확인한 사진 썸네일 좌표를 사용
+./kakaocli.cmd download '예시 채팅방' --at 180 240 --kind image --output-dir './downloads' --json
+
+# 파일은 첨부의 '저장' 버튼 좌표를 사용
+./kakaocli.cmd download '예시 채팅방' --at 260 340 --kind file --output-dir './downloads' --json
+
+# 해당 방의 사진 뷰어가 이미 열려 있는 경우
+./kakaocli.cmd download '예시 채팅방' --viewer --output-dir './downloads' --json
+
+# 이전 작업에서 이미 열린, 해당 방 소유의 저장창부터 완료
+./kakaocli.cmd download '예시 채팅방' --dialog --output-dir './downloads' --json
 ```
 
-## 안전 및 제한
+`--at X Y`는 `capture`로 만든 **대상 방 창 이미지의 왼쪽 위 기준 픽셀 좌표**입니다. 위 좌표는 문법 예시이며 실제 캡처에서 항목을 확인해 지정해야 합니다. 파일의 제목이나 본문이 아니라 해당 첨부의 저장 버튼을 지정합니다. 좌표가 대화 영역을 벗어나면 거부합니다.
 
-- 개인적인 테스트 및 자동화 용도로만 사용하세요.
-- 카카오톡 서비스 약관과 조직 정책을 확인하세요.
-- 대량·반복 전송 기능은 제공하지 않습니다.
-- `send`는 기본적으로 사람의 확인을 요구합니다.
-- `read` 명령은 대화 내용을 복사하므로 실행 후 Windows 클립보드가 해당 텍스트로 바뀝니다.
-- UI 자동화 특성상 전송 후 실제 채팅창에서 결과를 확인하는 것이 좋습니다.
-- 저장소에는 실제 카카오톡 DB, 대화 내용, 방 이름, 복구 키 또는 로컬 진단 결과를 커밋하지 마세요.
-- 연락처 CSV에는 제3자의 개인정보가 포함될 수 있으므로 저장·공유·삭제를 직접 관리하세요. CLI는 연락처 CSV를 GitHub로 업로드하지 않습니다.
+기본 다운로드는 카카오톡이 `GetSaveFileNameW`를 호출하는 지점에서 지정한 로컬 경로를 반환합니다. **새 저장 모달창을 열지 않으며**, 카카오톡 자체가 그 경로에 첨부 원본을 저장합니다. 검증한 Windows 버전에서 사진 원본 저장과 전경 창 유지를 실제로 확인했습니다. 화면 캡처를 원본 사진이라고 대신 저장하지 않습니다.
 
-### DB 키 복구 안전성
+기존 저장창이 남아 있으면 소유 프로세스·대화방과 입력란·저장 버튼을 확인해 먼저 처리합니다. 동일한 파일 이름은 덮어쓰지 않습니다. `saved=true`를 반환하기 전에 파일 생성·크기 안정화와 SHA256을 확인하며, 완료를 확인하지 못하면 오류를 반환합니다. 만료되거나 다운로드할 수 없는 첨부, 지원하지 않는 저장 경로에서는 실패할 수 있습니다.
 
-- `recover-key`는 지정한 PID가 실제 `KakaoTalk.exe`인지 확인합니다.
-- `MEM_COMMIT` 상태인 읽기 가능한 `MEM_PRIVATE` 영역만 읽습니다.
-- 후보 키는 대상 DB 첫 페이지의 SQLCipher 4 HMAC-SHA512로 검증합니다.
-- DB 원본과 카카오톡 프로세스 메모리를 수정하지 않습니다.
-- 키 원문은 콘솔이나 JSON에 출력하지 않습니다.
-- 검증 키는 `%LOCALAPPDATA%\kakaocli-win\keys.json`에 DPAPI 암호문으로 저장되어 같은 Windows 사용자만 해제할 수 있습니다.
-- DB 조회 시 평문 SQLite 파일은 Windows 임시 폴더에 만들고 조회 종료 시 즉시 삭제합니다.
-- DB가 실제로 사용되는 화면을 최근에 열지 않았다면 키가 메모리에 없을 수 있습니다. 이 경우 해당 화면을 연 뒤 다시 실행하세요.
-- 다른 사람의 PC, 계정 또는 접근 권한이 없는 데이터에는 사용하지 마세요.
+저장 위치를 생략하면 CLI 데이터 폴더 아래의 새 다운로드 폴더를 사용합니다. `KAKAOCLI_DATA_DIR`로 데이터 위치를 지정하거나 `--output-dir`로 작업별 폴더를 선택할 수 있습니다. 개인 대화·캡처·첨부는 GitHub에 업로드하지 않습니다.
 
-구현은 `TalkUserDB.edb` 키 복구·재검증과 DPAPI 저장을 지원합니다. 다른 `.edb` 파일은 별도 키를 사용할 수 있으며, 대상 데이터가 메모리에 로드되지 않았다면 제한 시간 안에 키를 찾지 못할 수 있습니다.
-
-## Codex 스킬과 유지관리 스크립트
-
-저장소에는 다른 사용자가 Codex에서 재사용할 수 있는 두 개의 스킬이 포함됩니다.
-
-- `skills/kakaotalk-windows-cli`: 설치, 개인정보를 가린 진단, 안전한 UI 자동화
-- `skills/kakaotalk-db-key-recovery`: 소유자 승인 범위의 로컬 DB 키 복구와 검증
-
-스킬을 사용하려면 원하는 폴더를 Codex 스킬 디렉터리에 복사하세요. 각 스킬의 `scripts` 폴더에는 개인정보를 덜 노출하는 진단 및 키 복구 도우미가 들어 있습니다.
-
-공개 전 검증은 다음 명령으로 실행합니다.
+## 받은 첨부 분석
 
 ```powershell
-.\scripts\verify.ps1
+./kakaocli.cmd analyze './downloads/photo.jpg' --json
+./kakaocli.cmd analyze './downloads/document.pdf' --output-dir './work/pdf-review' --max-chars 20000 --json
 ```
 
-`privacy-audit.ps1`은 로컬 사용자 경로, 흔한 토큰 형식, 비밀키와 DB/키 저장 파일을 검사합니다. 이는 보조 검사이므로 커밋 전 `git diff --cached`도 직접 확인하세요.
+| 형식 | 반환 내용 | 범위 |
+| --- | --- | --- |
+| PNG/JPEG/GIF/WebP 등 | 파일 검증·크기·프레임 수·이미지 절대경로 | 실제 사진 해석은 어시스턴트가 이미지를 열어 수행 |
+| PDF | 추출 텍스트·페이지 수, 요청 시 첫 3쪽 PNG | 텍스트는 최대 200쪽; 스캔본은 이미지 검토 필요 |
+| TXT/CSV/JSON 등 | UTF-8·BOM UTF-16·CP949 텍스트 | 지정한 문자 수까지 추출 |
+| DOCX/HWPX | 문서 XML의 텍스트 | 원래 시각 배치와 내부 그림은 분석하지 않음 |
+| XLSX | 시트·셀·저장된 수식 | 수식 실행·재계산, 차트·내부 그림 추출 없음 |
+
+`analyze`는 절대경로, MIME, 용량, SHA256, 추출 범위(`coverage`), 잘림(`truncated`), 부분 성공·오류 정보를 제공합니다. 이미지 경로와 PDF 미리보기는 어시스턴트가 직접 확인할 수 있습니다. 지원하지 않는 형식은 `unsupported`로 반환하며 바이너리를 임의로 글자로 변환하지 않습니다. 매크로·첨부 코드 실행, 외부 링크 가져오기, 클라우드 업로드는 하지 않습니다. 이 명령 자체가 사진 의미 해석이나 OCR을 수행했다고 보고하지 않습니다.
+
+## macOS 전용 버전
+
+[macos/README.md](macos/README.md)에 별도 설치·사용법이 있습니다. `macos/kakao`는 Python과 JXA/System Events의 Accessibility를 사용하며 Win32 코드나 Windows DB 복호화 기능에 의존하지 않습니다.
+
+기본 동작에서 앱 활성화·최상단 전환·전역 키 입력을 요청하지 않습니다. 이미 열린 방의 AX 텍스트와 첨부 표시를 읽고, 고유한 입력란과 Send 버튼이 있는 경우에만 명시적 `--yes`로 제출합니다. 이미 열린 카카오톡 소유 저장창 처리와 공통 로컬 첨부 분석도 제공합니다.
+
+**macOS 버전은 모의 AX 단위 테스트와 소스 검사만 수행했습니다. 실제 Mac의 권한과 카카오톡 AX 구조는 미검증입니다.** Windows의 닫힌 방 OCR 검색이나 `GetSaveFileNameW` 저장 방식을 macOS에서도 지원한다고 주장하지 않습니다. 손쉬운 사용·System Events 자동화 권한은 사용자가 직접 허용해야 합니다.
+
+## Ubuntu 서버 자체 실행
+
+Ubuntu의 자체 Wine 버전 설치·로그인·서비스 관리는 [linux/README.md](linux/README.md)를 따릅니다.
+
+```bash
+bash linux/install.sh --install-system
+kakao-local runtime start
+kakao-local runtime screenshot --output "$HOME/kakao-login.png"
+kakao-local messages '확인된 방 제목' --limit 30 --json
+```
+
+카카오톡 설치와 최초 모바일 인증이 필요합니다. 서버의 전용 Xvfb 화면에서 저장 모달창을 처리하며, 첨부 원본은 같은 Ubuntu 서버에 저장합니다. 계정 로그인·전송의 실환경 검증 범위는 `ANALYSIS.md`에 기록합니다.
+
+## 로컬 DB 기능
+
+기반 프로젝트의 DB·키 관련 명령도 유지합니다. 일반 대화 조회·전송·첨부 저장에는 DB 키 복구가 필요하지 않습니다.
+
+```powershell
+./kakaocli.cmd key-status --json
+./kakaocli.cmd recover-key --json
+./kakaocli.cmd friends --contains '예시' --json
+./kakaocli.cmd chat-rooms --contains '예시' --json
+./kakaocli.cmd export-room-contacts '예시 채팅방' --exact --output './contacts.csv' --json
+./kakaocli.cmd db-schema --json
+```
+
+`friends`와 `chat-rooms`는 메타데이터 조회이며 메시지 본문 전체를 읽는 기능이 아닙니다. 복구한 키는 Windows DPAPI로 보호하고 원문을 출력하지 않습니다. DB별 키가 다를 수 있으며 모든 DB의 복호화를 보장하지 않습니다. 연락처 CSV·DB·복구 키·개인 진단 자료는 공개 저장소에 포함하지 마세요.
+
+## REA 분석과 검증
+
+```powershell
+./scripts/rea-kakao.ps1
+./scripts/rea-kakao.ps1 -Runtime
+./.venv/Scripts/python.exe -m pytest tests macos/tests linux/tests -q
+./scripts/verify.ps1
+```
+
+`rea-kakao.ps1 -Runtime`은 컨트롤 클래스·ID와 정해진 프로그램 문자열을 관찰하고 연결을 해제하는 재현 스크립트입니다. 기본 백그라운드 CLI가 사용하는 일시적인 프로세스 후킹은 별도의 `background_agent.js`에 구현되어 있습니다.
+
+회귀 테스트에는 합성 데이터와 모의 Win32/AX 호출을 사용합니다. 로컬 실제 앱 검증 결과·이미지·개인 대화는 `work/` 등 Git 제외 경로에만 보관합니다. 공개 전에는 스크립트 검사와 함께 스테이징된 변경에 비밀정보와 개인 자료가 없는지 확인하세요.
 
 ## 출처
 
-Windows의 `EVA_Window_Dblclk`/`RICHEDIT50W` 탐색 방식은 [rime10221/kakao_MCP](https://github.com/rime10221/kakao_MCP)의 공개 구현을 참고해 안전 확인과 진단 기능을 추가했습니다. 이 프로젝트는 해당 저장소나 카카오와 제휴되어 있지 않습니다.
+기반 코드와 MIT 라이선스는 [Lee-SiHyeon/kakaocli-win](https://github.com/Lee-SiHyeon/kakaocli-win)을 유지합니다. 초기 Win32 창 탐색은 [rime10221/kakao_MCP](https://github.com/rime10221/kakao_MCP)의 공개 구현을 참고했습니다.
 
-SQLCipher 키 검증은 [SQLCipher 공식 설계 문서](https://www.zetetic.net/sqlcipher/design/)와 [공식 verify.c](https://github.com/sqlcipher/sqlcipher-tools/blob/master/verify.c)의 SQLCipher 4 페이지 HMAC 방식을 따릅니다.
+SQLCipher 키 검증은 [공식 설계 문서](https://www.zetetic.net/sqlcipher/design/)와 [verify.c](https://github.com/sqlcipher/sqlcipher-tools/blob/master/verify.c)를 따릅니다. Windows OCR은 [Windows.Media.Ocr](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine.recognizeasync)을 사용합니다.

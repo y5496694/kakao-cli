@@ -139,7 +139,7 @@ def prepare_send(monkeypatch):
 
 def test_send_exact_default_and_checked_content(monkeypatch):
     state = prepare_send(monkeypatch)
-    assert backend.send_message("개발팀", "메시지").title == "개발팀"
+    assert backend.send_message("개발팀", "메시지", interactive=True).title == "개발팀"
     assert state["pressed"] == [backend.win32con.VK_RETURN]
 
 
@@ -153,7 +153,7 @@ def test_focus_change_before_enter_prevents_submission(monkeypatch):
 
     monkeypatch.setattr(backend, "_assert_target", guard)
     with pytest.raises(KakaoError, match="포커스"):
-        backend.send_message("개발팀", "메시지")
+        backend.send_message("개발팀", "메시지", interactive=True)
     assert state["pressed"] == []
     assert state["text"] == "메시지"
 
@@ -167,7 +167,7 @@ def test_content_change_before_enter_prevents_submission(monkeypatch):
 
     monkeypatch.setattr(backend, "_set_text", changed_text)
     with pytest.raises(KakaoError, match="전송 직전에"):
-        backend.send_message("개발팀", "메시지")
+        backend.send_message("개발팀", "메시지", interactive=True)
     assert state["pressed"] == []
 
 
@@ -175,7 +175,7 @@ def test_room_title_change_before_typing_preserves_empty_input(monkeypatch):
     state = prepare_send(monkeypatch)
     monkeypatch.setattr(backend.win32gui, "GetWindowText", lambda _hwnd: "다른 방")
     with pytest.raises(KakaoError, match="제목이 바뀌었습니다"):
-        backend.send_message("개발팀", "메시지")
+        backend.send_message("개발팀", "메시지", interactive=True)
     assert state["pressed"] == []
     assert state["text"] == ""
 
@@ -185,7 +185,7 @@ def test_room_title_change_before_enter_prevents_submission(monkeypatch):
     titles = iter(["개발팀", "다른 방"])
     monkeypatch.setattr(backend.win32gui, "GetWindowText", lambda _hwnd: next(titles))
     with pytest.raises(KakaoError, match="제목이 바뀌었습니다"):
-        backend.send_message("개발팀", "메시지")
+        backend.send_message("개발팀", "메시지", interactive=True)
     assert state["pressed"] == []
     assert state["text"] == "메시지"
 
@@ -198,7 +198,7 @@ def test_rich_edit_line_ending_normalization_allows_multiline_content(monkeypatc
         return True
 
     monkeypatch.setattr(backend, "_set_text", normalized)
-    assert backend.send_message("개발팀", "첫째 줄\n둘째 줄").title == "개발팀"
+    assert backend.send_message("개발팀", "첫째 줄\n둘째 줄", interactive=True).title == "개발팀"
     assert state["pressed"] == [backend.win32con.VK_RETURN]
 
 
@@ -222,6 +222,9 @@ def prepare_preview(monkeypatch, *, draft="", control_id=1006):
     monkeypatch.setattr(backend, "_focus", lambda *args: pytest.fail("preview must not change focus"))
     monkeypatch.setattr(backend, "_set_text", lambda *args: pytest.fail("preview must not type"))
     monkeypatch.setattr(backend, "_press", lambda *args: pytest.fail("preview must not press keys"))
+    def unavailable(*args, **kwargs):
+        raise KakaoError("직접 독립 창으로 열어 주세요.")
+    monkeypatch.setattr("kakaocli_win.background.ensure_room", unavailable)
 
 
 def test_preview_verifies_target_without_focusing_or_typing(monkeypatch):

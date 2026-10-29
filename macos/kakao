@@ -1,0 +1,3 @@
+#!/bin/sh
+SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd)
+exec "${KAKAO_PYTHON:-python3}" "$SCRIPT_DIR/kakao.py" "$@"

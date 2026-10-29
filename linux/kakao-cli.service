@@ -1,0 +1,15 @@
+[Unit]
+Description=KakaoTalk in a private local Wine desktop
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-%h/.config/kakao-cli/runtime.env
+ExecStart=%h/.local/bin/kakao-local runtime start
+ExecStop=%h/.local/bin/kakao-local runtime stop
+TimeoutStartSec=45
+TimeoutStopSec=420
+
+[Install]
+WantedBy=default.target
