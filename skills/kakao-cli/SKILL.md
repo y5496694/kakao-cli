@@ -1,6 +1,6 @@
 ---
 name: kakao-cli
-description: 카카오톡을 CLI로 백그라운드 조회·검색·전송하고 사진·파일을 받아 분석한다. Windows 닫힌 대화방 자동 검색과 macOS 어댑터, Ubuntu Wine 서버 버전을 제공한다.
+description: 카카오톡을 CLI로 백그라운드 조회·검색하고 메시지·사진·파일을 전송하거나 받은 첨부를 분석한다. Windows 닫힌 대화방 자동 검색과 macOS 어댑터, Ubuntu Wine 서버 버전을 제공한다.
 ---
 
 # 카카오톡 CLI
@@ -42,6 +42,17 @@ OCR·제목 검증이 실패하면 임의 선택하지 말고 반환된 후보�
 서버 전달·상대 수신 확인이 아니다. 오류·타임아웃 뒤 자동 재전송하지 말고 읽기로 상태를 확인한다.
 
 ## 사진과 파일
+
+Windows 0.6.0부터 로컬 사진·파일 전송을 지원한다. 사용자가 지정한 대상과 첨부에 대한 발송 허가를 사용하며 재확인을 반복하지 않는다.
+
+```powershell
+& 'D:\Codex\bin\kakao.cmd' send-image '확인된 전체 방 제목' 'D:\Codex\tmp\photo.png' --dry-run --json
+& 'D:\Codex\bin\kakao.cmd' send-image '확인된 전체 방 제목' 'D:\Codex\tmp\photo.png' --yes --json
+& 'D:\Codex\bin\kakao.cmd' send-file '확인된 전체 방 제목' 'D:\Codex\tmp\document.pdf' --dry-run --json
+& 'D:\Codex\bin\kakao.cmd' send-file '확인된 전체 방 제목' 'D:\Codex\tmp\document.pdf' --yes --json
+```
+
+사진은 정지 이미지 한 장, 파일은 한 개씩 보낸다. 사진 전송은 클립보드를 변경한다. `--dry-run`은 첨부를 입력하지 않는다. 실제 전송은 소유 창·제목·파일 이름·버튼·원본 해시와 초안 보존을 검사한다. 파일 버튼은 현재 96 DPI에서만 지원하며, 이름이 잘리거나 OCR 확인이 실패하면 전송하지 않는다. `submitted_unconfirmed`는 전송 버튼 제출 관찰이며 오류·타임아웃 뒤에는 재전송하지 말고 `attachments`·`messages`·`capture`로 상태부터 확인한다.
 
 ```powershell
 & 'D:\Codex\bin\kakao.cmd' attachments '방 제목' --limit 20 --json

@@ -26,6 +26,15 @@ const sleep = ms => new Promise(resolve=>setTimeout(resolve, ms));
 const text = hwnd => { const length = getTextLength(hwnd); if (length < 0 || length > 1000000) throw Error('Control text exceeds read limit'); const buf=Memory.alloc((length+2)*2); getText(hwnd,buf,length+2); return buf.readUtf16String(); };
 const className = hwnd => { const buf=Memory.alloc(1024); getClass(hwnd,buf,512); return buf.readUtf16String(); };
 function controlText(hwnd) {const length=sendMessage(hwnd,0xE,ptr(0),ptr(0)).toInt32();if(length<0||length>1000000)throw Error('Control text read limit');const buf=Memory.alloc((length+2)*2);sendMessage(hwnd,0xD,ptr(length+2),buf);return buf.readUtf16String();}
+function richText(hwnd) {
+  const lengthInfo=Memory.alloc(8);lengthInfo.writeU32(2);lengthInfo.add(4).writeU32(1200);
+  const length=sendMessage(hwnd,0x45f,lengthInfo,ptr(0)).toInt32();
+  if(length<0||length>1000000)throw Error('RichEdit text exceeds read limit');
+  const buffer=Memory.alloc((length+2)*2),info=Memory.alloc(32);info.writeU32((length+2)*2);info.add(4).writeU32(0);info.add(8).writeU32(1200);info.add(16).writePointer(ptr(0));info.add(24).writePointer(ptr(0));
+  const copied=sendMessage(hwnd,0x45e,info,buffer).toInt32();
+  if(copied<0||copied>length)throw Error('RichEdit text readback failed');
+  return buffer.readUtf16String(copied);
+}
 function inProcess(h) {const pid=Memory.alloc(4);getWindowPid(h,pid);return pid.readU32()===Process.id;}
 function windows(parent=null) { const items=[]; const cb=new NativeCallback(h=>{if(inProcess(h))items.push(h);return 1;},'int',['pointer','pointer']); if(parent)enumChildren(parent,cb,ptr(0));else enumWindows(cb,ptr(0)); return items; }
 function unique(items, label) { if(items.length!==1)throw Error(label+': expected one match, found '+items.length); return items[0]; }
@@ -49,6 +58,7 @@ function newlyOwned(h) {
   return false;
 }
 let saveRequest=null,saveRequestError=null;
+let attachmentPreview=null,filePickerError=null;
 const replacedAddresses=new Set();
 function replaceAddress(addr, ret, args, handler, alias=false) {
   if(replacedAddresses.has(String(addr)))return;
@@ -134,6 +144,19 @@ if(config.op==='download') {
   },'int',['pointer']);
   callbacks.push(callback);Interceptor.replace(address,callback);
 }
+if(config.op==='attachment-send'&&config.kind==='file') {
+  const address=Process.getModuleByName('comdlg32.dll').getExportByName('GetOpenFileNameW');
+  replaceAddress(address,'int',['pointer'],(original,ofn)=>{
+    if(!active)return original(ofn);
+    if(!ofn.add(8).readPointer().equals(ptr(config.root))){filePickerError='File picker owner does not match the chat';return 0;}
+    const buffer=ofn.add(48).readPointer(),capacity=ofn.add(56).readU32(),path=config.source_path;
+    if(!path||buffer.isNull()||path.length+1>capacity){filePickerError='Attachment path exceeds file picker capacity';return 0;}
+    buffer.writeUtf16String(path);
+    const slash=Math.max(path.lastIndexOf('\\'),path.lastIndexOf('/')),dot=path.lastIndexOf('.');
+    ofn.add(100).writeU16(slash+1);ofn.add(102).writeU16(dot>slash?dot+1:0);
+    return 1;
+  });
+}
 async function key(h,vk,control=false) {virtualFocus=h;ctrl=control;post(h,0x100,ptr(vk),ptr(1));post(h,0x101,ptr(vk),ptr('0xc0000001'));await sleep(100);ctrl=false;}
 function point(h,message,x,y) {const packed=((y&0xffff)<<16)|(x&0xffff);post(h,message,ptr(message===0x201||message===0x203?1:0),ptr(packed>>>0));}
 async function openRoom() {
@@ -192,6 +215,41 @@ async function run() {
   if(text(room)!==config.room)throw Error('Room title verification failed');
   if(config.op==='open')return {hwnd:String(room),title:text(room)};
   if(config.op==='read')return copy(room);
+  if(config.op==='attachment-send') {
+    if(!isEnabled(room)||dialogs().length)throw Error('A modal popup blocks the chat');
+    if(windows().some(h=>className(h)==='EVA_Window_Dblclk'&&getOwner(h,4).equals(room)&&isVisible(h)))throw Error('An existing chat popup must be completed first');
+    const edit=input(room);virtualFocus=edit;
+    const draft=richText(edit);
+    if(config.kind==='image') {
+      if(clipboardSeq()!==config.clipboard_sequence||!api('IsClipboardFormatAvailable','int',['uint'])(8))throw Error('Image clipboard changed before attachment paste');
+    }
+    if(config.kind==='file') {
+      point(room,0x201,config.file_button[0],config.file_button[1]);point(room,0x202,config.file_button[0],config.file_button[1]);
+    }
+    else {ctrl=true;sendMessage(edit,0x100,ptr(86),ptr(1));sendMessage(edit,0x101,ptr(86),ptr('0xc0000001'));ctrl=false;}
+    await sleep(500);
+    if(filePickerError)throw Error(filePickerError);
+    if(richText(edit)!==draft)throw Error('Draft changed after paste; no confirmation submitted');
+    attachmentPreview=unique(windows().filter(h=>!initialWindows.has(String(h))&&className(h)==='EVA_Window_Dblclk'&&getOwner(h,4).equals(room)),'New attachment preview');
+    const decisionPromise=new Promise(resolve=>recv('attachment-decision',message=>resolve(message.payload)));
+    send({event:'attachment-preview',preview:String(attachmentPreview),room_hwnd:String(room),pid:Process.id});
+    const decision=await decisionPromise;
+    if(decision.error)throw Error(decision.error);
+    if(!isWindow(attachmentPreview)||!inProcess(attachmentPreview)||!getOwner(attachmentPreview,4).equals(room)||className(attachmentPreview)!=='EVA_Window_Dblclk')throw Error('Attachment preview owner changed');
+    virtualRoot=attachmentPreview;scoped.add(String(attachmentPreview));
+    if(!decision?.verified||text(room)!==config.room||richText(edit)!==draft)throw Error('Attachment target or draft changed before confirmation');
+    const rect=Memory.alloc(16);api('GetWindowRect','int',['pointer','pointer'])(attachmentPreview,rect);
+    if(decision.width!==rect.add(8).readS32()-rect.readS32()||decision.height!==rect.add(12).readS32()-rect.add(4).readS32())throw Error('Attachment preview geometry changed');
+    if(config.preview_only)return {prepared:true,room:text(room),kind:config.kind,preview_path:decision.preview_path};
+    if(!isVisible(attachmentPreview)||!decision.point?.every(Number.isFinite)||decision.point[0]<0||decision.point[0]>=decision.width||decision.point[1]<decision.height*.65||decision.point[1]>=decision.height)throw Error('Attachment send button is outside the verified preview');
+    virtualFocus=attachmentPreview;
+    point(attachmentPreview,0x201,decision.point[0],decision.point[1]);point(attachmentPreview,0x202,decision.point[0],decision.point[1]);
+    for(let i=0;i<30;i++) {
+      if(!isWindow(attachmentPreview)||!isVisible(attachmentPreview))return {submitted:true,delivery_confirmed:false,status:'submitted_unconfirmed',room:text(room),kind:config.kind,preview_path:decision.preview_path};
+      await sleep(100);
+    }
+    throw Error('Attachment confirmation did not close; delivery unknown, do not retry automatically');
+  }
   if(config.op==='scroll') {
     const keys={up:0x21,down:0x22,top:0x24,bottom:0x23};
     if(!(config.direction in keys))throw Error('Invalid scroll direction');
@@ -237,8 +295,14 @@ async function run() {
 run().then(result=>finish(true,result)).catch(error=>finish(false,null,error.message));
 async function finish(ok,result,error) {
   const restore=[];
+  if(attachmentPreview&&isWindow(attachmentPreview)) {
+    const rect=Memory.alloc(16);api('GetClientRect','int',['pointer','pointer'])(attachmentPreview,rect);
+    point(attachmentPreview,0x201,rect.add(8).readS32()-15,14);point(attachmentPreview,0x202,rect.add(8).readS32()-15,14);
+    await sleep(200);
+  }
   for(const {h,x,y} of created.values()) {
     if(!isWindow(h))continue;
+    if(attachmentPreview?.equals(h))continue;
     const cls=className(h);
     if(cls==='#32770'||viewers(config.room).some(v=>v.equals(h)))post(h,0x10,ptr(0),ptr(0));
     else {showWindow(h,0);restore.push({h,x,y});}

@@ -181,6 +181,13 @@ def build_parser() -> argparse.ArgumentParser:
     send_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
     send_parser.add_argument("--dry-run", action="store_true", help="대상과 내용을 출력하고 전송하지 않음")
 
+    for name, help_text in (("send-image", "로컬 사진 한 장 전송"), ("send-file", "로컬 파일 한 개 전송")):
+        outgoing_parser = command(name, help=help_text)
+        outgoing_parser.add_argument("room", help="확인된 채팅방의 정확한 제목")
+        outgoing_parser.add_argument("path", help="전송할 로컬 파일 경로")
+        outgoing_parser.add_argument("--yes", action="store_true", help="확인 질문 생략")
+        outgoing_parser.add_argument("--dry-run", action="store_true", help="파일과 대상만 검사하고 전송하지 않음")
+
     send_self_parser = command(
         "send-self", help="DB에서 나와의 채팅을 찾아 메시지 전송"
     )
@@ -425,6 +432,15 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
                 window = send_message(room, message, exact=True, interactive=args.interactive)
                 result = _submitted_result(window, message)
+        elif args.command in {"send-image", "send-file"}:
+            from .outgoing import preview_attachment, send_attachment
+            kind = "image" if args.command == "send-image" else "file"
+            result = preview_attachment(args.room, args.path, kind=kind)
+            if not args.dry_run:
+                if not confirm_send(result['room'], result['attachment']['filename'], skip=args.yes):
+                    emit({"submitted": False, "cancelled": True}, as_json=args.json)
+                    return 2
+                result = send_attachment(result['room'], result['attachment']['path'], kind=kind)
         elif args.command == "send":
             if not args.room.strip():
                 raise KakaoError("채팅방 이름은 비어 있을 수 없습니다.")

@@ -1,4 +1,4 @@
-# kakao-cli 0.5.0
+# kakao-cli 0.6.0
 
 Windows 10/11의 실행 중인 PC 카카오톡을 로컬 CLI로 조회하고 메시지와 첨부파일을 처리합니다. `read`, `messages`, `search`, `send`, `download`는 기본적으로 백그라운드에서 동작합니다. 별도 [macOS 전용 버전](macos/README.md)도 포함하며, 실제 macOS 카카오톡에서는 아직 검증하지 않았습니다.
 
@@ -55,6 +55,23 @@ $env:KAKAOCLI_REA_ENTRY = (Resolve-Path './tools/rea/node_modules/rea-agents/scr
 - `submitted_unconfirmed`는 카카오톡 입력란에 대한 제출을 확인했다는 뜻입니다. 서버 전달이나 상대방 수신을 확정하지 않습니다. 불명확한 실패나 타임아웃 뒤에는 자동으로 재전송하지 마세요.
 - 같은 이름의 대상이 여러 개이거나 저장 모달창이 작업을 막으면 먼저 해당 상태를 해결해야 합니다.
 - `--json`은 하위 명령 앞뒤에 사용할 수 있습니다.
+
+## 사진과 파일 보내기 (Windows)
+
+```powershell
+./kakaocli.cmd send-image '확인된 방 제목' './photo.png' --dry-run --json
+./kakaocli.cmd send-image '확인된 방 제목' './photo.png' --yes --json
+./kakaocli.cmd send-file '확인된 방 제목' './document.pdf' --dry-run --json
+./kakaocli.cmd send-file '확인된 방 제목' './document.pdf' --yes --json
+```
+
+한 번에 로컬 사진 한 장 또는 파일 한 개를 보냅니다. `--dry-run`은 대상·파일·SHA256만 확인하며 클립보드나 첨부 미리보기를 바꾸지 않습니다. 실제 전송에는 기존 `send`와 같은 확인 절차와 `--yes`를 적용합니다.
+
+사진은 `CF_DIB` 클립보드와 대상 입력창의 Ctrl+V 처리로 미리보기를 엽니다. 사진 전송은 클립보드를 변경합니다. 파일은 확인된 파일 첨부 버튼과 `GetOpenFileNameW` 경로 반환을 사용하므로 파일 선택창을 띄우지 않습니다. 카카오톡의 전송 미리보기는 화면 밖에서 확인하며 전경 창을 유지합니다.
+
+전송 전에 소유 프로세스·대화방·새 미리보기·제목·버튼과 원본 해시를 확인합니다. 파일은 표시된 파일 이름도 대조합니다. 기존 메시지 초안을 바꾸지 않으며, 확인 실패 시 이번 작업의 미리보기만 닫습니다. `submitted_unconfirmed`는 전송 버튼과 미리보기 닫힘을 관찰한 결과입니다. 서버 전달·상대 수신 확인이 아니며, 오류·타임아웃 뒤에는 대화를 읽어 상태를 확인한 후 판단해야 합니다.
+
+현재 검증 대상은 Windows 카카오톡 26.9.0.5337/x64입니다. 파일 첨부 버튼은 96 DPI 배율에서 지원하며 다른 배율은 거부합니다. 파일 이름이 잘리거나 OCR로 정확히 확인되지 않으면 전송하지 않습니다. `send-image`는 정지 이미지에 사용하고 애니메이션 원본은 `send-file`로 지정합니다. macOS/Linux 어댑터에는 이 명령을 추가하지 않았습니다.
 
 ## 사진과 파일 받기
 
