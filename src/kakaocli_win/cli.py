@@ -196,6 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _message_arguments(send_self_parser)
     send_self_parser.add_argument("--yes", action="store_true", help="확인 질문 생략")
+    send_self_parser.add_argument('--expected-self', help='직전 self-room의 본인 계정·방 지문')
     send_self_parser.add_argument("--interactive", action="store_true", help="화면 활성화를 허용(기본값은 백그라운드)")
     send_self_parser.add_argument(
         "--dry-run", action="store_true", help="대상과 내용을 출력하고 전송하지 않음"
@@ -439,9 +440,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command in {"self-room", "send-self"}:
             message = _read_message(args) if args.command == 'send-self' else None
             from .db_reader import read_chat_rooms
-            from .key_recovery import default_chat_list_database, load_stored_key
-
-            database = default_chat_list_database()
+            from .key_recovery import load_stored_key
+            from .active_database import current_account
+            import hashlib
+            active = current_account()
+            database = active['database']
             memo_rooms = read_chat_rooms(
                 database,
                 load_stored_key(database),
@@ -451,9 +454,12 @@ def main(argv: list[str] | None = None) -> int:
             if len(memo_rooms) != 1 or not memo_rooms[0]["title"]:
                 raise KakaoError("나와의 채팅방을 하나로 식별하지 못했습니다.")
             room = memo_rooms[0]["title"]
-            preview = {"room": room, "message": message, "exact": True, "self": True, "evidence": "MemoChat"}
+            identity = hashlib.sha256((active['binding'] + '\0' + room).encode()).hexdigest()
+            if args.command == 'send-self' and args.expected_self and args.expected_self != identity:
+                raise KakaoError('나와의 채팅 확인 후 활성 계정 또는 본인 방이 바뀌었습니다. 전송하지 않았습니다.')
+            preview = {"room": room, "message": message, "exact": True, "self": True, "account_confirmed": True, "account_binding": identity, "evidence": "MemoChat+active_process_file"}
             if args.command == 'self-room':
-                emit({'room': room, 'self': True, 'evidence': 'MemoChat'}, as_json=args.json)
+                emit({'room': room, 'self': True, 'account_confirmed': True, 'account_binding': identity, 'evidence': 'MemoChat+active_process_file'}, as_json=args.json)
                 return 0
             if args.dry_run:
                 result = {"sent": False, "dry_run": True, **preview, **preview_send(room, exact=True)}

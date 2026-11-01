@@ -174,8 +174,10 @@ kakao-local messages '확인된 방 제목' --limit 30 --json
 
 SQLCipher 키 검증은 [공식 설계 문서](https://www.zetetic.net/sqlcipher/design/)와 [verify.c](https://github.com/sqlcipher/sqlcipher-tools/blob/master/verify.c)를 따릅니다. Windows OCR은 [Windows.Media.Ocr](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine.recognizeasync)을 사용합니다.
 
-## 나래 오피스 나와의 채팅 연동 (0.6.1)
+## 나래 오피스 나와의 채팅 연동 (0.6.2)
 
 `self-room --json`은 이미 등록된 로컬 보안 키로 채팅 종류가 `MemoChat`인 방을 유일하게 확인합니다. `send-self --message-file 결과.txt --dry-run --json`과 `--yes`로 동일한 방에 결과를 제출합니다. 이 명령들은 키를 새로 복구하지 않습니다. 키가 없거나 본인 방을 확정하지 못하면 전송하지 않습니다. 일반 전송 때문에 메모리 키 복구를 자동 시작하지 않습니다.
 
 `capture-main --output 새이미지.png --json`은 메인 창만 캡처합니다. 트레이에 숨겨져 있으면 활성화 없이 화면 밖에서 잠시 렌더링하고 원래 위치와 숨김 상태를 복원합니다. 기존 파일을 덮어쓰지 않습니다. 메인 창 존재는 계정 로그인·나와의 채팅 확인을 뜻하지 않습니다.
+
+나와의 채팅은 단순히 가장 최근 캐시를 고르지 않습니다. 검증한 현재 카카오톡 프로세스가 열고 있는 chatListInfo.edb 한 개를 파일 핸들 메타데이터로 확인하고, 그 DB의 MemoChat을 읽습니다. 계정 파일을 확인하지 못하거나 여러 계정이 열려 있으면 중단합니다. self-room의 account_binding을 send-self --expected-self 값에 넣으면 확인 후 계정·방이 바뀐 경우 보내지 않습니다. 이 확인은 프로세스 메모리나 암호 키를 읽지 않으며 새 키를 복구하지 않습니다.

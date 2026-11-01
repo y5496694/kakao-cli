@@ -88,3 +88,5 @@ Windows 0.6.0부터 로컬 사진·파일 전송을 지원한다. 사용자가 �
 호환성 문제는 `inspect --room '제목' --json`과 저장소 `ANALYSIS.md`를 확인한다.
 
 나래 오피스의 나와의 채팅 결과 전송은 `self-room --json`으로 기존 보안 키의 `MemoChat` 종류를 확인한 뒤 `send-self --message-file ... --yes --json`을 사용한다. 키가 없으면 일반 전송을 위해 recover-key를 시작하지 않는다. 메인 창만 필요할 때 `capture-main --output 새경로.png --json`으로 전경과 숨김 상태를 보존하며 조회한다. 메인 창 발견만으로 본인 계정 로그인을 확인했다고 하지 않는다.
+
+self-room은 현재 카카오톡 프로세스가 연 계정 DB와 MemoChat을 함께 확인하며 account_binding을 반환한다. send-self에는 --expected-self 지문을 전달해 확인 후 계정 변경을 막는다. 활성 계정 파일을 확인하지 못하면 최신 캐시나 다른 계정으로 대체하지 않는다.

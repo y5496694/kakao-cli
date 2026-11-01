@@ -93,3 +93,11 @@ Windows에서는 백그라운드 대화 복사, 검색 결과의 전체 방 제�
 기반 프로젝트의 DB·키 복구 기능은 유지합니다. 이번 UI·첨부 REA 검증을 근거로 모든 로컬 DB가 복호화되거나 전체 메시지 본문이 조회된다고 주장하지 않습니다.
 
 기반 CLI는 [Lee-SiHyeon/kakaocli-win](https://github.com/Lee-SiHyeon/kakaocli-win), MIT입니다. Windows OCR API는 [Microsoft 문서](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine.recognizeasync)에 설명되어 있습니다.
+
+## 현재 계정의 나와의 채팅 식별 (0.6.2)
+
+기존 로컬 DB 중 수정 시간이 가장 최신인 파일이 현재 로그인 계정이라는 가정을 제거했습니다. 현재 카카오톡 소유 창과 실행 파일을 확인한 뒤 그 프로세스의 디스크 파일 핸들만 조회하고, 유일한 chatListInfo.edb와 MemoChat 종류를 연결합니다. 본인 방과 프로세스 생성 시각·계정 파일의 지문을 바인딩합니다. 일반 self-room/send-self에서 메모리 키 복구를 시작하지 않습니다.
+
+메타데이터 조회는 DuplicateHandle의 DUPLICATE_SAME_ACCESS만 사용하며 원본 핸들을 닫지 않습니다. 로컬 복제 핸들을 모두 닫고, 파이프·소켓은 파일명 조회에서 제외합니다. Windows 내부 핸들 자료 형식이 다르거나 권한·개수 한도·계정 식별이 불확실하면 전송하지 않습니다. 합성 파일을 현재 검사 프로세스에서 열어 실제 Windows API가 그 파일 한 개를 식별하는 것을 시험했습니다. 이 시험은 실제 계정의 메시지 발송 성공을 뜻하지 않습니다.
+
+참고: [DuplicateHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle), [GetFileType](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfiletype), [GetFinalPathNameByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew), [System Informer의 시스템 핸들 자료 정의](https://github.com/winsiderss/systeminformer/blob/master/phnt/include/ntexapi.h). 내부 형식은 Windows x64 호환 범위에서만 사용합니다.
