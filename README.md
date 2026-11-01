@@ -173,3 +173,9 @@ kakao-local messages '확인된 방 제목' --limit 30 --json
 기반 코드와 MIT 라이선스는 [Lee-SiHyeon/kakaocli-win](https://github.com/Lee-SiHyeon/kakaocli-win)을 유지합니다. 초기 Win32 창 탐색은 [rime10221/kakao_MCP](https://github.com/rime10221/kakao_MCP)의 공개 구현을 참고했습니다.
 
 SQLCipher 키 검증은 [공식 설계 문서](https://www.zetetic.net/sqlcipher/design/)와 [verify.c](https://github.com/sqlcipher/sqlcipher-tools/blob/master/verify.c)를 따릅니다. Windows OCR은 [Windows.Media.Ocr](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine.recognizeasync)을 사용합니다.
+
+## 나래 오피스 나와의 채팅 연동 (0.6.1)
+
+`self-room --json`은 이미 등록된 로컬 보안 키로 채팅 종류가 `MemoChat`인 방을 유일하게 확인합니다. `send-self --message-file 결과.txt --dry-run --json`과 `--yes`로 동일한 방에 결과를 제출합니다. 이 명령들은 키를 새로 복구하지 않습니다. 키가 없거나 본인 방을 확정하지 못하면 전송하지 않습니다. 일반 전송 때문에 메모리 키 복구를 자동 시작하지 않습니다.
+
+`capture-main --output 새이미지.png --json`은 메인 창만 캡처합니다. 트레이에 숨겨져 있으면 활성화 없이 화면 밖에서 잠시 렌더링하고 원래 위치와 숨김 상태를 복원합니다. 기존 파일을 덮어쓰지 않습니다. 메인 창 존재는 계정 로그인·나와의 채팅 확인을 뜻하지 않습니다.

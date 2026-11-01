@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kakaocli-win"
-version = "0.6.0"
+version = "0.6.1"
 description = "A safety-first, unofficial KakaoTalk CLI for Windows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,3 +27,4 @@ kakaocli_win = ["*.js", "*.mjs", "*.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+

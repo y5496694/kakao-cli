@@ -154,6 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
     capture_parser.add_argument("room", help="채팅방의 정확한 제목")
     capture_parser.add_argument("--output", required=True, help="저장할 이미지 경로")
     capture_parser.add_argument("--scroll", choices=("up", "down", "top", "bottom"), help="캡처 전 대화 목록 스크롤")
+    main_capture = command("capture-main", help="현재 카카오톡 메인 창만 백그라운드 캡처")
+    main_capture.add_argument("--output", required=True)
 
     download_parser = command("download", help="지정 채팅방의 사진 또는 파일 다운로드")
     download_parser.add_argument("room", help="채팅방의 정확한 제목")
@@ -188,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
         outgoing_parser.add_argument("--yes", action="store_true", help="확인 질문 생략")
         outgoing_parser.add_argument("--dry-run", action="store_true", help="파일과 대상만 검사하고 전송하지 않음")
 
+    command('self-room', help='기존 보안 키로 나와의 채팅 종류를 확인 (키 복구는 하지 않음)')
     send_self_parser = command(
         "send-self", help="DB에서 나와의 채팅을 찾아 메시지 전송"
     )
@@ -270,6 +273,33 @@ def main(argv: list[str] | None = None) -> int:
             from .attachments import list_attachments
 
             result = list_attachments(args.room, limit=args.limit, interactive=args.interactive)
+        elif args.command == "capture-main":
+            from .backend import find_main_window
+            from .attachments import _capture
+            main = find_main_window()
+            if not main:
+                raise KakaoError("로그인된 카카오톡 메인 창을 찾지 못했습니다.")
+            destination = Path(args.output).expanduser().resolve()
+            if destination.exists():
+                raise KakaoError("기존 캡처 파일을 덮어쓰지 않습니다.")
+            from . import backend as backend
+            was_visible = backend.win32gui.IsWindowVisible(main.hwnd)
+            old_rect = backend.win32gui.GetWindowRect(main.hwnd)
+            foreground = backend.win32gui.GetForegroundWindow()
+            try:
+                if not was_visible:
+                    backend.win32gui.SetWindowPos(main.hwnd, 1, -32000, -32000, 0, 0, 0x11)
+                    backend.win32gui.ShowWindow(main.hwnd, 4)
+                    import time
+                    time.sleep(.2)
+                _capture(main.hwnd, destination)
+            finally:
+                if not was_visible:
+                    backend.win32gui.ShowWindow(main.hwnd, 0)
+                    backend.win32gui.SetWindowPos(main.hwnd, 1, old_rect[0], old_rect[1], 0, 0, 0x11)
+            if backend.win32gui.GetForegroundWindow() != foreground:
+                raise KakaoError("캡처 중 전경 창이 바뀌었습니다. 추가 입력은 하지 않았습니다.")
+            result = {"path": str(destination), "kind": "main_window", "background": True}
         elif args.command == "capture":
             from .attachments import capture_room
 
@@ -406,8 +436,8 @@ def main(argv: list[str] | None = None) -> int:
 
             database = Path(args.db).resolve() if args.db else default_database()
             result = read_schema(database, load_stored_key(database))
-        elif args.command == "send-self":
-            message = _read_message(args)
+        elif args.command in {"self-room", "send-self"}:
+            message = _read_message(args) if args.command == 'send-self' else None
             from .db_reader import read_chat_rooms
             from .key_recovery import default_chat_list_database, load_stored_key
 
@@ -421,7 +451,10 @@ def main(argv: list[str] | None = None) -> int:
             if len(memo_rooms) != 1 or not memo_rooms[0]["title"]:
                 raise KakaoError("나와의 채팅방을 하나로 식별하지 못했습니다.")
             room = memo_rooms[0]["title"]
-            preview = {"room": room, "message": message, "exact": True}
+            preview = {"room": room, "message": message, "exact": True, "self": True, "evidence": "MemoChat"}
+            if args.command == 'self-room':
+                emit({'room': room, 'self': True, 'evidence': 'MemoChat'}, as_json=args.json)
+                return 0
             if args.dry_run:
                 result = {"sent": False, "dry_run": True, **preview, **preview_send(room, exact=True)}
             else:
