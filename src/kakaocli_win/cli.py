@@ -445,16 +445,14 @@ def main(argv: list[str] | None = None) -> int:
             import hashlib
             active = current_account()
             database = active['database']
-            memo_rooms = read_chat_rooms(
-                database,
-                load_stored_key(database),
-                room_type="MemoChat",
-                limit=2,
-            )
+            rooms = read_chat_rooms(database, load_stored_key(database), include_ids=True)
+            memo_rooms = [item for item in rooms if item['type'].casefold() == 'memochat']
             if len(memo_rooms) != 1 or not memo_rooms[0]["title"]:
                 raise KakaoError("나와의 채팅방을 하나로 식별하지 못했습니다.")
             room = memo_rooms[0]["title"]
-            identity = hashlib.sha256((active['binding'] + '\0' + room).encode()).hexdigest()
+            if len([item for item in rooms if item['title'].strip().casefold() == room.strip().casefold()]) != 1:
+                raise KakaoError('본인 프로필과 제목이 같은 다른 대화방이 있어 이름으로 전송하지 않았습니다.')
+            identity = hashlib.sha256((active['binding'] + '\0' + str(memo_rooms[0]['chatId']) + '\0' + room).encode()).hexdigest()
             if args.command == 'send-self' and args.expected_self and args.expected_self != identity:
                 raise KakaoError('나와의 채팅 확인 후 활성 계정 또는 본인 방이 바뀌었습니다. 전송하지 않았습니다.')
             preview = {"room": room, "message": message, "exact": True, "self": True, "account_confirmed": True, "account_binding": identity, "evidence": "MemoChat+active_process_file"}
