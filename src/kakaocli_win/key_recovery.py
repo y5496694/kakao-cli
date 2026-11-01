@@ -13,8 +13,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-
 from .backend import KakaoError, require_windows
 
 
@@ -220,6 +218,7 @@ def _read_memory(kernel32, handle, address: int, size: int) -> bytes | None:
 
 
 def _candidate_offsets(data: bytes, stride: int) -> np.ndarray:
+    import numpy as np
     """Vectorized low-cost filter for random-looking 32-byte key material."""
     if len(data) < KEY_SIZE:
         return np.empty(0, dtype=np.int64)
