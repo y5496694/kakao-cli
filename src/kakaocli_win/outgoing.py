@@ -74,13 +74,16 @@ def _image_clipboard(source):
 
 
 def _file_button(window):
-    """Use the paper icon position in the verified 96-DPI Windows build."""
+    """Use the observed paper icon at the supported 96/120 DPI scales."""
     # The file icon is 88 logical pixels from the left, 25 from the bottom.
     # Fail on an unknown DPI/layout rather than pressing an unrelated control.
-    dpi = ctypes.windll.user32.GetDpiForWindow(window.hwnd)
-    if dpi != 96 or window.width < 350 or window.height < 450:
-        raise b.KakaoError('파일 첨부 버튼의 화면 배율·배치를 검증하지 못했습니다.')
-    return [88, b.win32gui.GetClientRect(window.hwnd)[3] - 25]
+    from .attachments import _window_dpi_context, _native_client_size
+    with _window_dpi_context(window.hwnd):
+        dpi = ctypes.windll.user32.GetDpiForWindow(window.hwnd)
+        width, height = _native_client_size(window.hwnd)
+        if dpi not in {96, 120} or width < 350*dpi/96 or height < 450*dpi/96:
+            raise b.KakaoError('파일 첨부 버튼의 화면 배율·배치를 검증하지 못했습니다.')
+        return [round(88*dpi/96), height - round(25*dpi/96)]
 
 
 def send_attachment(room, path, *, kind):
@@ -132,7 +135,8 @@ def inspect_preview(request):
         time.sleep(.3)
     enlarged = path.with_stem(path.stem + '-ocr')
     with Image.open(path) as picture:
-        picture.resize((picture.width*2, picture.height*2)).save(enlarged)
+        scale = min(4, 2500/max(picture.size))
+        picture.resize(tuple(max(1, round(v*scale)) for v in picture.size), Image.Resampling.LANCZOS).save(enlarged)
     observation = ocr_image(enlarged)
     text = ''.join(observation['text'].split())
     if request['kind'] == 'image':

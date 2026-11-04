@@ -276,31 +276,16 @@ def main(argv: list[str] | None = None) -> int:
             result = list_attachments(args.room, limit=args.limit, interactive=args.interactive)
         elif args.command == "capture-main":
             from .backend import find_main_window
-            from .attachments import _capture
+            from .attachments import _capture_rendered
             main = find_main_window()
             if not main:
-                raise KakaoError("로그인된 카카오톡 메인 창을 찾지 못했습니다.")
+                raise KakaoError("카카오톡 메인 창을 찾지 못했습니다.")
             destination = Path(args.output).expanduser().resolve()
             if destination.exists():
                 raise KakaoError("기존 캡처 파일을 덮어쓰지 않습니다.")
-            from . import backend as backend
-            was_visible = backend.win32gui.IsWindowVisible(main.hwnd)
-            old_rect = backend.win32gui.GetWindowRect(main.hwnd)
-            foreground = backend.win32gui.GetForegroundWindow()
-            try:
-                if not was_visible:
-                    backend.win32gui.SetWindowPos(main.hwnd, 1, -32000, -32000, 0, 0, 0x11)
-                    backend.win32gui.ShowWindow(main.hwnd, 4)
-                    import time
-                    time.sleep(.2)
-                _capture(main.hwnd, destination)
-            finally:
-                if not was_visible:
-                    backend.win32gui.ShowWindow(main.hwnd, 0)
-                    backend.win32gui.SetWindowPos(main.hwnd, 1, old_rect[0], old_rect[1], 0, 0, 0x11)
-            if backend.win32gui.GetForegroundWindow() != foreground:
-                raise KakaoError("캡처 중 전경 창이 바뀌었습니다. 추가 입력은 하지 않았습니다.")
-            result = {"path": str(destination), "kind": "main_window", "background": True}
+            _capture_rendered(main.hwnd, destination)
+            result = {"path": str(destination), "kind": "main_window", "background": True,
+                      "foreground_unchanged": True}
         elif args.command == "capture":
             from .attachments import capture_room
 
@@ -460,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
                 emit({'room': room, 'self': True, 'account_confirmed': True, 'account_binding': identity, 'evidence': 'MemoChat+active_process_file'}, as_json=args.json)
                 return 0
             if args.dry_run:
-                result = {"sent": False, "dry_run": True, **preview, **preview_send(room, exact=True)}
+                result = {"sent": False, "dry_run": True, **preview, **preview_send(room, exact=True, background=not args.interactive)}
             else:
                 if args.stdin and not args.yes:
                     raise KakaoError("--stdin 전송에는 --yes가 필요합니다.")
@@ -484,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
             message = _read_message(args)
             preview = {"room": args.room, "message": message, "exact": True}
             if args.dry_run:
-                result = {"sent": False, "dry_run": True, **preview, **preview_send(args.room, exact=True)}
+                result = {"sent": False, "dry_run": True, **preview, **preview_send(args.room, exact=True, background=not args.interactive)}
             else:
                 if args.stdin and not args.yes:
                     raise KakaoError("--stdin 전송에는 --yes가 필요합니다.")

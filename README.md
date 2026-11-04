@@ -1,31 +1,40 @@
-# kakao-cli 0.6.0
+# kakao-cli 0.7.0
 
-Windows 10/11의 실행 중인 PC 카카오톡을 로컬 CLI로 조회하고 메시지와 첨부파일을 처리합니다. `read`, `messages`, `search`, `send`, `download`는 기본적으로 백그라운드에서 동작합니다. 별도 [macOS 전용 버전](macos/README.md)도 포함하며, 실제 macOS 카카오톡에서는 아직 검증하지 않았습니다.
+Windows 10/11의 실행 중인 x86(32비트)·x64(64비트) PC 카카오톡을 로컬 CLI로 조회하고 메시지와 첨부파일을 처리합니다. `read`, `messages`, `search`, `send`, `download`는 기본적으로 백그라운드에서 동작합니다. 별도 [macOS 전용 버전](macos/README.md)도 포함하며, 실제 macOS 카카오톡에서는 아직 검증하지 않았습니다.
 
 Linux/Ubuntu 서버에서는 [linux/](linux/README.md)의 자체 실행형을 사용합니다. 서버 내부의 전용 Wine 환경과 Xvfb 가상 화면에서 카카오톡 자체를 실행하므로 외부 Windows PC와 SSH가 필요하지 않습니다. Windows 카카오톡을 Wine으로 실행하는 호환 방식이며, 최초 계정 인증과 해당 Wine 버전의 호환성 확인이 필요합니다.
 
 **Ubuntu 24.04.5/WSL2에서 Wine 11과 네이티브 Visual C++ 런타임을 적용해 카카오톡 26.9.0.5337의 실제 초기 약관 화면 구동을 확인했습니다. 최초 계정 로그인·모바일 인증은 사용자가 진행해야 하며, 로그인 후 대화 조회·전송은 아직 실검증 전입니다.**
 
-이 버전은 [morluto/rea](https://github.com/morluto/rea) 6.8.0과 Frida로 Windows 카카오톡 **26.9.0.5337 / x64**를 분석·검증했습니다. 내부 컨트롤과 API에 의존하므로 다른 카카오톡 버전에서 같은 동작을 보장하지 않습니다. [분석 근거와 검증 범위](ANALYSIS.md)를 확인하세요. 카카오와 제휴된 프로젝트가 아닙니다.
+0.7.0은 [morluto/rea](https://github.com/morluto/rea) 6.8.0과 Frida로 Windows 카카오톡 **26.5.0.5163 / x86** 지원을 추가했습니다. 기존 **26.9.0.5337 / x64** 검증과 범위를 구분합니다.
+
+| 대상 | 실제 앱에서 확인한 범위 | 남은 한계 |
+| --- | --- | --- |
+| 26.5.0.5163 / x86 | CLI 단문 제출·새 메시지 표시, 120 DPI 일반 파일 제출·첨부 표시, 지정 폴더로 원본 파일 다운로드·SHA256 왕복 대조 | 서버 전달·상대 수신 미확인 |
+| 26.9.0.5337 / x64 | 기존 백그라운드 조회·검색, 사진 제출·첨부 표시, 사진 원본 저장 | 일반 파일은 미리보기·취소까지 검증; 서버 전달·상대 수신 미확인 |
+
+내부 컨트롤과 API에 의존하므로 다른 카카오톡 버전에서 같은 동작을 보장하지 않습니다. [분석 근거와 검증 범위](ANALYSIS.md)를 확인하세요. 카카오와 제휴된 프로젝트가 아닙니다.
 
 ## 설치
 
-Windows에서는 Python 3.10 이상, 로그인된 PC 카카오톡, REA 6.8.0의 Frida 런타임이 필요합니다.
+Windows에서는 Python 3.10 이상, 로그인된 PC 카카오톡, REA 6.8.0의 Frida 런타임이 필요합니다. `-InstallRea`에는 REA가 지원하는 Node.js와 npm 또는 `--allow-build`를 지원하는 pnpm이 필요합니다.
 
 ```powershell
 git clone https://github.com/y5496694/kakao-cli.git
 cd kakao-cli
-Set-ExecutionPolicy -Scope Process Bypass
-./install.ps1
-./.venv/Scripts/python.exe -m pip install -e '.[analysis]'
+.\install.ps1 -InstallRea
+.\.venv\Scripts\python.exe -m pip install -e '.[analysis]'
+.\kakaocli.cmd doctor --json
 ```
 
-REA 런타임이 별도로 설치되어 있다면 아래 환경변수로 실행 파일을 지정합니다. 경로는 각 설치 위치에 맞게 바꾸세요.
+설치기는 저장소 안의 `.venv`와 `work/rea`에 설치하며 전역 MCP 설정을 바꾸지 않습니다. `py.exe`가 없어도 사용 가능한 Python을 찾고, 필요하면 `-PythonExecutable`로 실행 파일을 지정할 수 있습니다. `kakaocli.cmd`는 자신의 위치를 기준으로 실행하므로 특정 드라이브나 현재 작업 폴더에 의존하지 않습니다.
+
+`-InstallRea`로 설치한 REA는 자동으로 찾습니다. 별도 설치를 사용할 때만 아래 환경변수로 실행 파일을 지정하세요.
 
 ```powershell
 $env:KAKAOCLI_REA_NODE = (Get-Command node).Source
-$env:KAKAOCLI_REA_ENTRY = (Resolve-Path './tools/rea/node_modules/rea-agents/scripts/rea.mjs').Path
-./kakaocli.cmd doctor --json
+$env:KAKAOCLI_REA_ENTRY = (Resolve-Path '.\work\rea\node_modules\rea-agents\scripts\rea.mjs').Path
+.\kakaocli.cmd doctor --json
 ```
 
 `KAKAOCLI_REA_ENTRY`는 설치한 `rea-agents`의 `scripts/rea.mjs` 경로입니다. REA 자체는 [공식 저장소](https://github.com/morluto/rea)의 설치 방법을 따르세요. 백그라운드 런타임이 없으면 작업을 실패로 반환합니다.
@@ -35,13 +44,13 @@ $env:KAKAOCLI_REA_ENTRY = (Resolve-Path './tools/rea/node_modules/rea-agents/scr
 ## 대화 조회와 메시지 전송
 
 ```powershell
-./kakaocli.cmd rooms --json
-./kakaocli.cmd open '예시 채팅방' --exact --json
-./kakaocli.cmd messages '예시 채팅방' --exact --limit 30 --json
-./kakaocli.cmd search '예시 채팅방' '회의' --exact --json
-./kakaocli.cmd send '예시 채팅방' --message-file './message.txt' --dry-run --json
+.\kakaocli.cmd rooms --json
+.\kakaocli.cmd open '예시 채팅방' --exact --json
+.\kakaocli.cmd messages '예시 채팅방' --exact --limit 30 --json
+.\kakaocli.cmd search '예시 채팅방' '회의' --exact --json
+.\kakaocli.cmd send '예시 채팅방' --message-file './message.txt' --dry-run --json
 # 사용자가 지정한 상대와 문안으로 실제 전송
-./kakaocli.cmd send '예시 채팅방' --message-file './message.txt' --yes --json
+.\kakaocli.cmd send '예시 채팅방' --message-file './message.txt' --yes --json
 ```
 
 닫힌 방은 카카오톡의 채팅 목록 검색으로 찾습니다. 검색 결과를 창 캡처와 로컬 Windows OCR로 읽고, 요청과 일치하는 표시 제목을 **한 개로 확인한 경우에만** 해당 결과를 엽니다. 열린 창의 실제 제목이 그 표시 제목과 완전히 같은지 다시 검사합니다. 짧은 이름이 더 긴 표시 이름에 포함된 경우에도 이 과정을 거치며, 후보가 여러 개이거나 OCR·창 제목 검증이 실패하면 임의로 전송하지 않습니다. 사용 전 방이 이미 독립 창으로 열려 있어야 하는 것은 아닙니다.
@@ -59,10 +68,10 @@ $env:KAKAOCLI_REA_ENTRY = (Resolve-Path './tools/rea/node_modules/rea-agents/scr
 ## 사진과 파일 보내기 (Windows)
 
 ```powershell
-./kakaocli.cmd send-image '확인된 방 제목' './photo.png' --dry-run --json
-./kakaocli.cmd send-image '확인된 방 제목' './photo.png' --yes --json
-./kakaocli.cmd send-file '확인된 방 제목' './document.pdf' --dry-run --json
-./kakaocli.cmd send-file '확인된 방 제목' './document.pdf' --yes --json
+.\kakaocli.cmd send-image '확인된 방 제목' './photo.png' --dry-run --json
+.\kakaocli.cmd send-image '확인된 방 제목' './photo.png' --yes --json
+.\kakaocli.cmd send-file '확인된 방 제목' './document.pdf' --dry-run --json
+.\kakaocli.cmd send-file '확인된 방 제목' './document.pdf' --yes --json
 ```
 
 한 번에 로컬 사진 한 장 또는 파일 한 개를 보냅니다. `--dry-run`은 대상·파일·SHA256만 확인하며 클립보드나 첨부 미리보기를 바꾸지 않습니다. 실제 전송에는 기존 `send`와 같은 확인 절차와 `--yes`를 적용합니다.
@@ -71,32 +80,32 @@ $env:KAKAOCLI_REA_ENTRY = (Resolve-Path './tools/rea/node_modules/rea-agents/scr
 
 전송 전에 소유 프로세스·대화방·새 미리보기·제목·버튼과 원본 해시를 확인합니다. 파일은 표시된 파일 이름도 대조합니다. 기존 메시지 초안을 바꾸지 않으며, 확인 실패 시 이번 작업의 미리보기만 닫습니다. `submitted_unconfirmed`는 전송 버튼과 미리보기 닫힘을 관찰한 결과입니다. 서버 전달·상대 수신 확인이 아니며, 오류·타임아웃 뒤에는 대화를 읽어 상태를 확인한 후 판단해야 합니다.
 
-현재 검증 대상은 Windows 카카오톡 26.9.0.5337/x64입니다. 파일 첨부 버튼은 96 DPI 배율에서 지원하며 다른 배율은 거부합니다. 파일 이름이 잘리거나 OCR로 정확히 확인되지 않으면 전송하지 않습니다. `send-image`는 정지 이미지에 사용하고 애니메이션 원본은 `send-file`로 지정합니다. macOS/Linux 어댑터에는 이 명령을 추가하지 않았습니다.
+파일 첨부 버튼은 96·120 DPI 배율을 지원하며 다른 배율은 거부합니다. 두 배율의 좌표 변환은 회귀 테스트로 검사하고, x86 26.5.0.5163의 실제 일반 파일 제출·첨부 표시는 120 DPI에서 확인했습니다. x64 26.9.0.5337의 기존 96 DPI 검증은 일반 파일 미리보기·취소와 사진 제출 범위입니다. 파일 이름이 잘리거나 OCR로 정확히 확인되지 않으면 전송하지 않습니다. `send-image`는 정지 이미지에 사용하고 애니메이션 원본은 `send-file`로 지정합니다. macOS/Linux 어댑터에는 이 명령을 추가하지 않았습니다.
 
 ## 사진과 파일 받기
 
 `attachments`는 로드된 대화에서 사진·파일 표시를 찾습니다. `capture`는 대상 창을 `PrintWindow`로 캡처하며 현재 화면의 전경 창을 바꾸지 않습니다. 캡처는 첨부 원본 파일과 구분되는 화면 이미지입니다.
 
 ```powershell
-./kakaocli.cmd attachments '예시 채팅방' --limit 20 --json
-./kakaocli.cmd capture '예시 채팅방' --output './work/chat.png' --json
+.\kakaocli.cmd attachments '예시 채팅방' --limit 20 --json
+.\kakaocli.cmd capture '예시 채팅방' --output './work/chat.png' --json
 
 # 캡처에서 확인한 사진 썸네일 좌표를 사용
-./kakaocli.cmd download '예시 채팅방' --at 180 240 --kind image --output-dir './downloads' --json
+.\kakaocli.cmd download '예시 채팅방' --at 180 240 --kind image --output-dir './downloads' --json
 
-# 파일은 첨부의 '저장' 버튼 좌표를 사용
-./kakaocli.cmd download '예시 채팅방' --at 260 340 --kind file --output-dir './downloads' --json
+# 파일은 첨부의 '다른 이름으로 저장' 링크 좌표를 사용
+.\kakaocli.cmd download '예시 채팅방' --at 260 340 --kind file --output-dir './downloads' --json
 
 # 해당 방의 사진 뷰어가 이미 열려 있는 경우
-./kakaocli.cmd download '예시 채팅방' --viewer --output-dir './downloads' --json
+.\kakaocli.cmd download '예시 채팅방' --viewer --output-dir './downloads' --json
 
 # 이전 작업에서 이미 열린, 해당 방 소유의 저장창부터 완료
-./kakaocli.cmd download '예시 채팅방' --dialog --output-dir './downloads' --json
+.\kakaocli.cmd download '예시 채팅방' --dialog --output-dir './downloads' --json
 ```
 
-`--at X Y`는 `capture`로 만든 **대상 방 창 이미지의 왼쪽 위 기준 픽셀 좌표**입니다. 위 좌표는 문법 예시이며 실제 캡처에서 항목을 확인해 지정해야 합니다. 파일의 제목이나 본문이 아니라 해당 첨부의 저장 버튼을 지정합니다. 좌표가 대화 영역을 벗어나면 거부합니다.
+`--at X Y`는 `capture`로 만든 **대상 방 창 이미지의 왼쪽 위 기준 픽셀 좌표**입니다. 위 좌표는 문법 예시이며 실제 캡처에서 항목을 확인해 지정해야 합니다. 파일의 제목이나 본문이 아니라 해당 첨부의 **다른 이름으로 저장** 링크를 지정합니다. x86 파일 카드의 기본 **저장**은 카카오톡에 설정된 폴더를 사용하므로 `--output-dir`로 제어하는 경로와 구분해야 합니다. 좌표가 대화 영역을 벗어나면 거부합니다.
 
-기본 다운로드는 카카오톡이 `GetSaveFileNameW`를 호출하는 지점에서 지정한 로컬 경로를 반환합니다. **새 저장 모달창을 열지 않으며**, 카카오톡 자체가 그 경로에 첨부 원본을 저장합니다. 검증한 Windows 버전에서 사진 원본 저장과 전경 창 유지를 실제로 확인했습니다. 화면 캡처를 원본 사진이라고 대신 저장하지 않습니다.
+기본 다운로드는 카카오톡이 `GetSaveFileNameW`를 호출하는 지점에서 지정한 로컬 경로를 반환합니다. **새 저장 모달창을 열지 않으며**, 카카오톡 자체가 그 경로에 첨부 원본을 저장합니다. x64 26.9.0.5337에서는 사진 원본 저장과 전경 창 유지를 확인했습니다. x86 26.5.0.5163에서는 CLI로 보낸 합성 파일을 지정한 폴더로 다시 받아 원본과 크기·SHA256이 같은 것을 확인했습니다. 이때 `saved=true`, `dialog_bypassed=true`, `foreground_unchanged=true`를 반환했습니다. 화면 캡처를 원본 사진이라고 대신 저장하지 않습니다.
 
 기존 저장창이 남아 있으면 소유 프로세스·대화방과 입력란·저장 버튼을 확인해 먼저 처리합니다. 동일한 파일 이름은 덮어쓰지 않습니다. `saved=true`를 반환하기 전에 파일 생성·크기 안정화와 SHA256을 확인하며, 완료를 확인하지 못하면 오류를 반환합니다. 만료되거나 다운로드할 수 없는 첨부, 지원하지 않는 저장 경로에서는 실패할 수 있습니다.
 
@@ -105,8 +114,8 @@ $env:KAKAOCLI_REA_ENTRY = (Resolve-Path './tools/rea/node_modules/rea-agents/scr
 ## 받은 첨부 분석
 
 ```powershell
-./kakaocli.cmd analyze './downloads/photo.jpg' --json
-./kakaocli.cmd analyze './downloads/document.pdf' --output-dir './work/pdf-review' --max-chars 20000 --json
+.\kakaocli.cmd analyze './downloads/photo.jpg' --json
+.\kakaocli.cmd analyze './downloads/document.pdf' --output-dir './work/pdf-review' --max-chars 20000 --json
 ```
 
 | 형식 | 반환 내용 | 범위 |
@@ -145,12 +154,12 @@ kakao-local messages '확인된 방 제목' --limit 30 --json
 기반 프로젝트의 DB·키 관련 명령도 유지합니다. 일반 대화 조회·전송·첨부 저장에는 DB 키 복구가 필요하지 않습니다.
 
 ```powershell
-./kakaocli.cmd key-status --json
-./kakaocli.cmd recover-key --json
-./kakaocli.cmd friends --contains '예시' --json
-./kakaocli.cmd chat-rooms --contains '예시' --json
-./kakaocli.cmd export-room-contacts '예시 채팅방' --exact --output './contacts.csv' --json
-./kakaocli.cmd db-schema --json
+.\kakaocli.cmd key-status --json
+.\kakaocli.cmd recover-key --json
+.\kakaocli.cmd friends --contains '예시' --json
+.\kakaocli.cmd chat-rooms --contains '예시' --json
+.\kakaocli.cmd export-room-contacts '예시 채팅방' --exact --output './contacts.csv' --json
+.\kakaocli.cmd db-schema --json
 ```
 
 `friends`와 `chat-rooms`는 메타데이터 조회이며 메시지 본문 전체를 읽는 기능이 아닙니다. 복구한 키는 Windows DPAPI로 보호하고 원문을 출력하지 않습니다. DB별 키가 다를 수 있으며 모든 DB의 복호화를 보장하지 않습니다. 연락처 CSV·DB·복구 키·개인 진단 자료는 공개 저장소에 포함하지 마세요.
@@ -158,13 +167,13 @@ kakao-local messages '확인된 방 제목' --limit 30 --json
 ## REA 분석과 검증
 
 ```powershell
-./scripts/rea-kakao.ps1
-./scripts/rea-kakao.ps1 -Runtime
-./.venv/Scripts/python.exe -m pytest tests macos/tests linux/tests -q
-./scripts/verify.ps1
+.\scripts\rea-kakao.ps1
+.\scripts\rea-kakao.ps1 -Runtime
+.\.venv\Scripts\python.exe -m pytest tests macos/tests linux/tests -q
+.\scripts\verify.ps1
 ```
 
-`rea-kakao.ps1 -Runtime`은 컨트롤 클래스·ID와 정해진 프로그램 문자열을 관찰하고 연결을 해제하는 재현 스크립트입니다. 기본 백그라운드 CLI가 사용하는 일시적인 프로세스 후킹은 별도의 `background_agent.js`에 구현되어 있습니다.
+`rea-kakao.ps1 -Runtime`은 아키텍처·ABI·컨트롤 클래스·ID·창 크기·DPI와 정해진 프로그램 문자열을 관찰하고 연결을 해제하는 재현 스크립트입니다. 창 제목과 대화 본문은 출력하지 않습니다. Rizin을 별도로 설정한 경우에만 정적 레이아웃 검사를 추가합니다. 기본 백그라운드 CLI가 사용하는 일시적인 프로세스 후킹은 별도의 `background_agent.js`에 구현되어 있습니다.
 
 회귀 테스트에는 합성 데이터와 모의 Win32/AX 호출을 사용합니다. 로컬 실제 앱 검증 결과·이미지·개인 대화는 `work/` 등 Git 제외 경로에만 보관합니다. 공개 전에는 스크립트 검사와 함께 스테이징된 변경에 비밀정보와 개인 자료가 없는지 확인하세요.
 
@@ -174,7 +183,7 @@ kakao-local messages '확인된 방 제목' --limit 30 --json
 
 SQLCipher 키 검증은 [공식 설계 문서](https://www.zetetic.net/sqlcipher/design/)와 [verify.c](https://github.com/sqlcipher/sqlcipher-tools/blob/master/verify.c)를 따릅니다. Windows OCR은 [Windows.Media.Ocr](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine.recognizeasync)을 사용합니다.
 
-## 나래 오피스 나와의 채팅 연동 (0.6.2)
+## 현재 계정의 나와의 채팅 식별
 
 `self-room --json`은 이미 등록된 로컬 보안 키로 채팅 종류가 `MemoChat`인 방을 유일하게 확인합니다. `send-self --message-file 결과.txt --dry-run --json`과 `--yes`로 동일한 방에 결과를 제출합니다. 이 명령들은 키를 새로 복구하지 않습니다. 키가 없거나 본인 방을 확정하지 못하면 전송하지 않습니다. 일반 전송 때문에 메모리 키 복구를 자동 시작하지 않습니다.
 

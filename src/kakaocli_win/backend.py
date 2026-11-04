@@ -94,9 +94,20 @@ def _transcript_handle(hwnd: int) -> int:
 def classify_window(hwnd: int, title: str, class_name: str) -> str:
     if class_name != CHAT_CLASS:
         return "other"
-    if _input_handles(hwnd):
+    message_inputs = [child for child in enum_children(hwnd)
+                      if win32gui.GetDlgCtrlID(child) == MESSAGE_INPUT_ID
+                      and 'RICHEDIT' in win32gui.GetClassName(child).upper()]
+    if message_inputs or _input_handles(hwnd):
         return "chat"
-    return "main" if title in {"", "카카오톡", "KakaoTalk"} else "popup"
+    if title in {"카카오톡", "KakaoTalk"}:
+        # The named root also exists before login. Its presence does not prove
+        # that an account is signed in or that chat operations are ready.
+        return "main"
+    online_views = [child for child in enum_children(hwnd)
+                    if win32gui.GetDlgCtrlID(child) == 132
+                    and win32gui.GetClassName(child) == "EVA_ChildWindow"
+                    and win32gui.GetWindowText(child).startswith("OnlineMainView_")]
+    return "main" if len(online_views) == 1 else "popup"
 
 
 def _window_process(hwnd: int) -> tuple[int, str] | None:
@@ -164,12 +175,20 @@ def list_rooms() -> list[WindowInfo]:
 
 
 def find_main_window() -> WindowInfo | None:
-    candidates = [
-        window
-        for window in list_windows()
-        if window.kind == "main" and window.width > 0 and window.height > 0
-    ]
-    return max(candidates, key=lambda item: item.width * item.height, default=None)
+    candidates = []
+    for window in list_windows():
+        if (window.kind != "main" or window.class_name != CHAT_CLASS
+                or window.width <= 0 or window.height <= 0):
+            continue
+        online_views = [child for child in enum_children(window.hwnd)
+                        if win32gui.GetDlgCtrlID(child) == 132
+                        and win32gui.GetClassName(child) == "EVA_ChildWindow"
+                        and win32gui.GetWindowText(child).startswith("OnlineMainView_")]
+        online = len(online_views) == 1
+        named = window.title in {"카카오톡", "KakaoTalk"}
+        if named or online:
+            candidates.append((online, named, window.width * window.height, window))
+    return max(candidates, key=lambda item: item[:3])[3] if candidates else None
 
 
 def find_room(room: str, *, exact: bool = False) -> WindowInfo | None:
@@ -434,7 +453,14 @@ def _prepare_send(room: str, *, exact: bool = True) -> tuple[WindowInfo, int]:
     return window, input_hwnd
 
 
-def preview_send(room: str, *, exact: bool = True) -> dict:
+def preview_send(room: str, *, exact: bool = True, background: bool = False) -> dict:
+    if background:
+        from .background import ensure_room, run_action
+        window = ensure_room(room, exact=exact)
+        result = run_action(window.title, 'preview-send')
+        if result.get('hwnd') != hex(window.hwnd) or result.get('draft_present') is not False:
+            raise KakaoError('전송 대상과 기존 초안을 확인하지 못했습니다.')
+        return {**result, 'target': window.to_dict()}
     window, input_hwnd = _prepare_send(room, exact=exact)
     return {
         "target_ready": True,

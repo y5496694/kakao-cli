@@ -1,8 +1,13 @@
 // Transient, process-local virtual input. No global keyboard/mouse injection.
-if(Process.pointerSize!==8)throw Error('The background runtime supports the REA-verified x64 KakaoTalk build only');
+if(Process.platform!=='windows'||!['ia32','x64'].includes(Process.arch))throw Error('The background runtime supports Windows x86/x64 only');
+const layout=win32Layout(Process.pointerSize),winAbi=layout.abi,ofnLayout=layout.openFileName;
+function fileDialog(ofn) {
+  if(ofn.isNull()||ofn.readU32()<ofnLayout.minSize)throw Error('Unsupported OPENFILENAMEW structure');
+  return ofnLayout;
+}
 const user = Process.getModuleByName('user32.dll');
 const callbacks = [];
-const api = (name, result, args) => new NativeFunction(user.getExportByName(name), result, args);
+const api = (name, result, args) => new NativeFunction(user.getExportByName(name), result, args,winAbi);
 const enumWindows = api('EnumWindows','int',['pointer','pointer']);
 const enumChildren = api('EnumChildWindows','int',['pointer','pointer','pointer']);
 const getTextLength = api('GetWindowTextLengthW','int',['pointer']);
@@ -30,13 +35,32 @@ function richText(hwnd) {
   const lengthInfo=Memory.alloc(8);lengthInfo.writeU32(2);lengthInfo.add(4).writeU32(1200);
   const length=sendMessage(hwnd,0x45f,lengthInfo,ptr(0)).toInt32();
   if(length<0||length>1000000)throw Error('RichEdit text exceeds read limit');
-  const buffer=Memory.alloc((length+2)*2),info=Memory.alloc(32);info.writeU32((length+2)*2);info.add(4).writeU32(0);info.add(8).writeU32(1200);info.add(16).writePointer(ptr(0));info.add(24).writePointer(ptr(0));
+  const buffer=Memory.alloc((length+2)*2),info=Memory.alloc(layout.getTextEx.size);info.writeU32((length+2)*2);info.add(4).writeU32(0);info.add(8).writeU32(1200);info.add(layout.getTextEx.defaultChar).writePointer(ptr(0));info.add(layout.getTextEx.usedDefaultChar).writePointer(ptr(0));
   const copied=sendMessage(hwnd,0x45e,info,buffer).toInt32();
   if(copied<0||copied>length)throw Error('RichEdit text readback failed');
   return buffer.readUtf16String(copied);
 }
+function inputText(hwnd) {
+  const value=richText(hwnd);
+  if(!value)return '';
+  const format=mode=>{
+    const info=Memory.alloc(116);info.writeU32(116);
+    sendMessage(hwnd,0x43a,ptr(mode),info);
+    return {mask:info.add(4).readU32(),effects:info.add(8).readU32(),color:info.add(20).readU32()};
+  };
+  if(value!=='메시지 입력')return value;
+  const selection=Memory.alloc(8);sendMessage(hwnd,0x434,ptr(0),selection);
+  const entire=Memory.alloc(8);entire.writeS32(0);entire.add(4).writeS32(-1);
+  let cue=false;
+  try {
+    sendMessage(hwnd,0x437,ptr(0),entire);
+    cue=isInputCue(value,format(0),format(1));
+  } finally {sendMessage(hwnd,0x437,ptr(0),selection);}
+  if(richText(hwnd)!==value)throw Error('Input changed during cue verification');
+  return cue?'':value;
+}
 function inProcess(h) {const pid=Memory.alloc(4);getWindowPid(h,pid);return pid.readU32()===Process.id;}
-function windows(parent=null) { const items=[]; const cb=new NativeCallback(h=>{if(inProcess(h))items.push(h);return 1;},'int',['pointer','pointer']); if(parent)enumChildren(parent,cb,ptr(0));else enumWindows(cb,ptr(0)); return items; }
+function windows(parent=null) { const items=[]; const cb=new NativeCallback(h=>{if(inProcess(h))items.push(h);return 1;},'int',['pointer','pointer'],winAbi); if(parent)enumChildren(parent,cb,ptr(0));else enumWindows(cb,ptr(0)); return items; }
 function unique(items, label) { if(items.length!==1)throw Error(label+': expected one match, found '+items.length); return items[0]; }
 function byPrefix(parent, prefix) { return unique(windows(parent).filter(h=>text(h).startsWith(prefix)),prefix); }
 function input(parent) { return unique(windows(parent).filter(h=>getId(h)===1006 && /RICHEDIT/i.test(className(h))),'Message input'); }
@@ -62,8 +86,8 @@ let attachmentPreview=null,filePickerError=null;
 const replacedAddresses=new Set();
 function replaceAddress(addr, ret, args, handler, alias=false) {
   if(replacedAddresses.has(String(addr)))return;
-  const original=new NativeFunction(addr,ret,args);
-  const cb=new NativeCallback((...v)=>handler(original,...v),ret,args);
+  const original=new NativeFunction(addr,ret,args,winAbi);
+  const cb=new NativeCallback((...v)=>handler(original,...v),ret,args,winAbi);
   try {Interceptor.replace(addr,cb);} catch(error) {
     // Frida follows forwarding jumps: a win32u export can already be covered
     // by its user32 wrapper even when the exported addresses differ.
@@ -116,48 +140,55 @@ Interceptor.attach(user.getExportByName('CreateWindowExW'),{
 if(config.op==='download') {
   const comdlg=Process.getModuleByName('comdlg32.dll');
   const address=comdlg.getExportByName('GetSaveFileNameW');
-  const original=new NativeFunction(address,'int',['pointer']);
+  const original=new NativeFunction(address,'int',['pointer'],winAbi);
   const callback=new NativeCallback(ofn=>{
     if(!active)return original(ofn);
-    const owner=ofn.add(8).readPointer();
+    const offsets=fileDialog(ofn),owner=ofn.add(offsets.owner).readPointer();
     if(!scopeOwner(owner))return 0;
-    const buffer=ofn.add(48).readPointer(),capacity=ofn.add(56).readU32();
+    const buffer=ofn.add(offsets.file).readPointer(),capacity=ofn.add(offsets.maxFile).readU32();
     const originalFilename=buffer.isNull()?'':buffer.readUtf16String();
     let filename=config.filename||originalFilename.split(/[\\/]/).pop()||'attachment';
-    const defaultExtension=ofn.add(104).readPointer();
+    const defaultExtension=ofn.add(offsets.defaultExtension).readPointer();
     if(!filename.includes('.')&&!defaultExtension.isNull())filename+='.'+defaultExtension.readUtf16String();
     if(/[\\/:*?"<>|\x00-\x1f]/.test(filename)||filename==='.'||filename==='..'){saveRequestError='Invalid attachment filename';return 0;}
     const destination=config.destination||(config.output_directory?.replace(/[\\/]$/,'')+'\\'+filename);
     if(!destination||buffer.isNull()||destination.length+1>capacity)return 0;
-    const attributes=new NativeFunction(Process.getModuleByName('kernel32.dll').getExportByName('GetFileAttributesW'),'uint32',['pointer']);
+    const attributes=new NativeFunction(Process.getModuleByName('kernel32.dll').getExportByName('GetFileAttributesW'),'uint32',['pointer'],winAbi);
     if(attributes(Memory.allocUtf16String(destination))!==0xffffffff){saveRequestError='Destination file already exists; no overwrite performed';return 0;}
     buffer.writeUtf16String(destination);
     const slash=Math.max(destination.lastIndexOf('\\'),destination.lastIndexOf('/'));
     const dot=destination.lastIndexOf('.');
-    ofn.add(100).writeU16(slash+1);
-    ofn.add(102).writeU16(dot>slash?dot+1:0);
-    const titleBuffer=ofn.add(64).readPointer(),titleCapacity=ofn.add(72).readU32();
+    ofn.add(offsets.fileOffset).writeU16(slash+1);
+    ofn.add(offsets.fileExtension).writeU16(dot>slash?dot+1:0);
+    const titleBuffer=ofn.add(offsets.fileTitle).readPointer(),titleCapacity=ofn.add(offsets.maxFileTitle).readU32();
     const basename=destination.slice(slash+1);
     if(!titleBuffer.isNull()&&basename.length+1<=titleCapacity)titleBuffer.writeUtf16String(basename);
     saveRequest={saved_path_requested:true,path:destination,original_filename:originalFilename,dialog_bypassed:true};
     return 1;
-  },'int',['pointer']);
+  },'int',['pointer'],winAbi);
   callbacks.push(callback);Interceptor.replace(address,callback);
 }
 if(config.op==='attachment-send'&&config.kind==='file') {
   const address=Process.getModuleByName('comdlg32.dll').getExportByName('GetOpenFileNameW');
   replaceAddress(address,'int',['pointer'],(original,ofn)=>{
     if(!active)return original(ofn);
-    if(!ofn.add(8).readPointer().equals(ptr(config.root))){filePickerError='File picker owner does not match the chat';return 0;}
-    const buffer=ofn.add(48).readPointer(),capacity=ofn.add(56).readU32(),path=config.source_path;
+    const offsets=fileDialog(ofn);
+    if(!ofn.add(offsets.owner).readPointer().equals(ptr(config.root))){filePickerError='File picker owner does not match the chat';return 0;}
+    const buffer=ofn.add(offsets.file).readPointer(),capacity=ofn.add(offsets.maxFile).readU32(),path=config.source_path;
     if(!path||buffer.isNull()||path.length+1>capacity){filePickerError='Attachment path exceeds file picker capacity';return 0;}
     buffer.writeUtf16String(path);
     const slash=Math.max(path.lastIndexOf('\\'),path.lastIndexOf('/')),dot=path.lastIndexOf('.');
-    ofn.add(100).writeU16(slash+1);ofn.add(102).writeU16(dot>slash?dot+1:0);
+    ofn.add(offsets.fileOffset).writeU16(slash+1);ofn.add(offsets.fileExtension).writeU16(dot>slash?dot+1:0);
     return 1;
   });
 }
-async function key(h,vk,control=false) {virtualFocus=h;ctrl=control;post(h,0x100,ptr(vk),ptr(1));post(h,0x101,ptr(vk),ptr('0xc0000001'));await sleep(100);ctrl=false;}
+async function key(h,vk,control=false) {
+  virtualFocus=h;ctrl=control;
+  const scan=api('MapVirtualKeyW','uint',['uint','uint'])(vk,4);
+  const down=(1|((scan&255)<<16)|(scan&0xff00?0x1000000:0))>>>0;
+  post(h,0x100,ptr(vk),ptr(down));post(h,0x101,ptr(vk),ptr((down|0xc0000000)>>>0));
+  await sleep(100);ctrl=false;
+}
 function point(h,message,x,y) {const packed=((y&0xffff)<<16)|(x&0xffff);post(h,message,ptr(message===0x201||message===0x203?1:0),ptr(packed>>>0));}
 async function openRoom() {
   const found=rooms(config.room); if(found.length) {const h=unique(found,'Exact room title');scoped.add(String(h));return h;}
@@ -195,19 +226,44 @@ async function run() {
     scoped.add(String(main));virtualRoot=main;
     const view=byPrefix(main,'ChatRoomListView_');
     const edit=unique(windows(view).filter(h=>className(h)==='Edit'&&getId(h)===100),'Search edit');
-    const previous=controlText(edit);setText(edit,Memory.allocUtf16String(config.query??config.room));await sleep(300);
-    return {main:String(main),previous_search:previous,search:controlText(edit),controls:windows(view).map(h=>({hwnd:String(h),class_name:className(h),id:getId(h),text:text(h),visible:!!isVisible(h)}))};
+    const previous=controlText(edit);
+    virtualFocus=byPrefix(view,'ChatRoomListCtrl_');
+    await key(virtualFocus,70,true);
+    virtualFocus=edit;
+    setText(edit,Memory.allocUtf16String(config.query??config.room));await sleep(500);
+    const list=byPrefix(view,'SearchListCtrl_'),rect=Memory.alloc(16),mainRect=Memory.alloc(16);
+    api('GetWindowRect','int',['pointer','pointer'])(list,rect);api('GetWindowRect','int',['pointer','pointer'])(main,mainRect);
+    return {main:String(main),previous_search:previous,search:controlText(edit),
+      result_bounds:[rect.readS32()-mainRect.readS32(),rect.add(4).readS32()-mainRect.add(4).readS32(),rect.add(8).readS32()-mainRect.readS32(),rect.add(12).readS32()-mainRect.add(4).readS32()],
+      render_size:[mainRect.add(8).readS32()-mainRect.readS32(),mainRect.add(12).readS32()-mainRect.add(4).readS32()]};
   }
   if(config.op==='open-selected') {
+    const existing=rooms(config.expected_title);
+    if(existing.length)return {hwnd:String(unique(existing,'Existing verified room')),title:config.expected_title};
     const main=unique(windows().filter(h=>className(h)==='EVA_Window_Dblclk'&&['카카오톡','KakaoTalk'].includes(text(h))),'main');scoped.add(String(main));virtualRoot=main;
     const view=byPrefix(main,'ChatRoomListView_'),list=byPrefix(view,'SearchListCtrl_');
     const edit=unique(windows(view).filter(h=>className(h)==='Edit'&&getId(h)===100),'Search edit');
     if(controlText(edit)!==config.query)throw Error('Search changed after verification; no row opened');
     const rect=Memory.alloc(16),mainRect=Memory.alloc(16);api('GetWindowRect','int',['pointer','pointer'])(list,rect);api('GetWindowRect','int',['pointer','pointer'])(main,mainRect);
-    const x=config.point[0]+mainRect.readS32()-rect.readS32(),y=config.point[1]+mainRect.add(4).readS32()-rect.add(4).readS32();virtualFocus=list;
+    const mainSize=[mainRect.add(8).readS32()-mainRect.readS32(),mainRect.add(12).readS32()-mainRect.add(4).readS32()];
+    const p=mapCapturePoint(config.point,config.capture_size||mainSize,mainSize);
+    const x=p[0]+mainRect.readS32()-rect.readS32(),y=p[1]+mainRect.add(4).readS32()-rect.add(4).readS32();virtualFocus=list;
     if(x<0||y<0||x>=rect.add(8).readS32()-rect.readS32()||y>=rect.add(12).readS32()-rect.add(4).readS32())throw Error('Search row point is outside result list');
     point(list,0x201,x,y);point(list,0x202,x,y);point(list,0x203,x,y);point(list,0x202,x,y);
-    for(let i=0;i<20;i++){const found=rooms(config.expected_title);if(found.length)return {hwnd:String(unique(found,'Verified room title')),title:config.expected_title};await sleep(100);}
+    for(let i=0;i<Math.max(20,(config.timeout-3)*10);i++) {
+      const found=rooms(config.expected_title);
+      if(found.length) {
+        const opened=unique(found,'Verified room title');
+        // Kakao may reuse an initially untitled pooled window rather than
+        // create a new HWND. It is still a newly opened room for this action.
+        scoped.add(String(opened));
+        if(!created.has(String(opened)))created.set(String(opened),{h:opened,x:100,y:100});
+        await sleep(250);
+        if(!isWindow(opened)||text(opened)!==config.expected_title)throw Error('Opened room changed during initialization');
+        return {hwnd:String(opened),title:config.expected_title};
+      }
+      await sleep(100);
+    }
     throw Error('Opened title did not match the OCR-verified result; no message sent');
   }
   if(config.op==='save-dialog'){const pending=unique(dialogs(),'Owned save dialog');return saveDialog(pending);}
@@ -215,11 +271,17 @@ async function run() {
   if(text(room)!==config.room)throw Error('Room title verification failed');
   if(config.op==='open')return {hwnd:String(room),title:text(room)};
   if(config.op==='read')return copy(room);
+  if(config.op==='preview-send') {
+    if(!isEnabled(room)||dialogs().length)throw Error('A modal popup blocks the chat');
+    const edit=input(room);
+    if(inputText(edit))throw Error('기존 초안이 있어 전송하지 않았습니다.');
+    return {hwnd:String(room),input_hwnd:String(edit),draft_present:false,target_ready:true};
+  }
   if(config.op==='attachment-send') {
     if(!isEnabled(room)||dialogs().length)throw Error('A modal popup blocks the chat');
     if(windows().some(h=>className(h)==='EVA_Window_Dblclk'&&getOwner(h,4).equals(room)&&isVisible(h)))throw Error('An existing chat popup must be completed first');
     const edit=input(room);virtualFocus=edit;
-    const draft=richText(edit);
+    const draft=inputText(edit);
     if(config.kind==='image') {
       if(clipboardSeq()!==config.clipboard_sequence||!api('IsClipboardFormatAvailable','int',['uint'])(8))throw Error('Image clipboard changed before attachment paste');
     }
@@ -229,7 +291,7 @@ async function run() {
     else {ctrl=true;sendMessage(edit,0x100,ptr(86),ptr(1));sendMessage(edit,0x101,ptr(86),ptr('0xc0000001'));ctrl=false;}
     await sleep(500);
     if(filePickerError)throw Error(filePickerError);
-    if(richText(edit)!==draft)throw Error('Draft changed after paste; no confirmation submitted');
+    if(inputText(edit)!==draft)throw Error('Draft changed after paste; no confirmation submitted');
     attachmentPreview=unique(windows().filter(h=>!initialWindows.has(String(h))&&className(h)==='EVA_Window_Dblclk'&&getOwner(h,4).equals(room)),'New attachment preview');
     const decisionPromise=new Promise(resolve=>recv('attachment-decision',message=>resolve(message.payload)));
     send({event:'attachment-preview',preview:String(attachmentPreview),room_hwnd:String(room),pid:Process.id});
@@ -237,7 +299,7 @@ async function run() {
     if(decision.error)throw Error(decision.error);
     if(!isWindow(attachmentPreview)||!inProcess(attachmentPreview)||!getOwner(attachmentPreview,4).equals(room)||className(attachmentPreview)!=='EVA_Window_Dblclk')throw Error('Attachment preview owner changed');
     virtualRoot=attachmentPreview;scoped.add(String(attachmentPreview));
-    if(!decision?.verified||text(room)!==config.room||richText(edit)!==draft)throw Error('Attachment target or draft changed before confirmation');
+    if(!decision?.verified||text(room)!==config.room||inputText(edit)!==draft)throw Error('Attachment target or draft changed before confirmation');
     const rect=Memory.alloc(16);api('GetWindowRect','int',['pointer','pointer'])(attachmentPreview,rect);
     if(decision.width!==rect.add(8).readS32()-rect.readS32()||decision.height!==rect.add(12).readS32()-rect.add(4).readS32())throw Error('Attachment preview geometry changed');
     if(config.preview_only)return {prepared:true,room:text(room),kind:config.kind,preview_path:decision.preview_path};
@@ -260,13 +322,16 @@ async function run() {
   if(config.op==='send') {
     if(!isEnabled(room)||dialogs().length)throw Error('A modal popup blocks the chat');
     const edit=input(room);virtualFocus=edit;
-    if(text(edit))throw Error('기존 초안이 있어 전송하지 않았습니다.');
+    if(inputText(edit))throw Error('기존 초안이 있어 전송하지 않았습니다.');
     if(!config.message?.trim())throw Error('Empty message');
-    setText(edit,Memory.allocUtf16String(config.message));
-    if(text(edit).replace(/\r\n?/g,'\n')!==config.message.replace(/\r\n?/g,'\n'))throw Error('Input readback failed; no Enter sent');
+    // WM_SETTEXT leaves Kakao 26.5's cached send state stale. A verified
+    // empty/cue input can be replaced through the normal RichEdit edit path.
+    sendMessage(edit,0xb1,ptr(0),ptr(-1));
+    sendMessage(edit,0xc2,ptr(1),Memory.allocUtf16String(config.message));
+    if(richText(edit).replace(/\r\n?/g,'\n')!==config.message.replace(/\r\n?/g,'\n'))throw Error('Input readback failed; no Enter sent');
     if(text(room)!==config.room)throw Error('Room title changed; no Enter sent');
     await key(edit,13);await sleep(200);
-    if(text(edit))throw Error('Input remains after Enter; delivery unknown, do not retry automatically');
+    if(inputText(edit))throw Error('Input remains after Enter; delivery unknown, do not retry automatically');
     return {hwnd:String(room),submitted:true,delivery_confirmed:false};
   }
   if(config.op==='download') {
@@ -283,7 +348,15 @@ async function run() {
       await sleep(350);
       if(saveRequest)return saveRequest;
       if(saveRequestError)throw Error(saveRequestError);
-      if(config.kind==='file')throw Error('No file Save action was triggered at the selected point');
+      if(config.kind==='file') {
+        for(let i=0;i<Math.max(1,(config.timeout-2)*10);i++) {
+          if(saveRequest)return saveRequest;
+          if(saveRequestError)throw Error(saveRequestError);
+          if(dialogs().length)throw Error('Unexpected save dialog: background boundary was not intercepted');
+          await sleep(100);
+        }
+        throw Error('No file Save As action was triggered at the selected point');
+      }
     }
     viewer=unique(viewers(config.room),'Photo viewer');scoped.add(String(viewer));virtualRoot=viewer;virtualFocus=viewer;
     await key(viewer,0x53,true);
@@ -308,7 +381,13 @@ async function finish(ok,result,error) {
     else {showWindow(h,0);restore.push({h,x,y});}
   }
   await sleep(100);active=false;
-  for(const {h,x,y} of restore)if(isWindow(h))setPosition(h,ptr(1),x===-2147483648?100:x,y===-2147483648?100:y,0,0,0x15);
+  for(const {h,x,y} of restore)if(isWindow(h)) {
+    // New rooms can inherit the temporarily offscreen main window's origin.
+    // Hide after releasing the interception boundary, then retain a usable
+    // normal position for a later deliberate foreground opening.
+    showWindow(h,0);
+    setPosition(h,ptr(1),x===-2147483648||x<-16000?100:x,y===-2147483648||y<-16000?100:y,0,0,0x15);
+  }
   const foreground_unchanged=originalForeground.equals(getForeground());
   send({event:'done',ok,result:result?{...result,background:true,foreground_unchanged}:undefined,error});
 }

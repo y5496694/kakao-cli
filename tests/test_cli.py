@@ -183,8 +183,8 @@ def test_input_submission_does_not_claim_delivery(monkeypatch, capsys):
 def test_dry_run_requires_readonly_target_preflight(monkeypatch, capsys):
     calls = []
 
-    def preview(room, *, exact):
-        calls.append((room, exact))
+    def preview(room, *, exact, background):
+        calls.append((room, exact, background))
         return {"target_ready": True, "draft_present": False}
 
     monkeypatch.setattr(cli, "preview_send", preview)
@@ -193,7 +193,7 @@ def test_dry_run_requires_readonly_target_preflight(monkeypatch, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["target_ready"] is True
     assert result["draft_present"] is False
-    assert calls == [("친구", True)]
+    assert calls == [("친구", True, True)]
 
 
 @pytest.mark.parametrize("room,message", [(" ", "메시지"), ("친구", " \n "), ("친구", "a\x00b")])

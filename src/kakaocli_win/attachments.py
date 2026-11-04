@@ -1,7 +1,9 @@
 """Scoped attachment acquisition; never activate windows or inject global input."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import ctypes
+from ctypes import wintypes
 import hashlib
 import math
 import os
@@ -74,11 +76,74 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+@contextmanager
+def _window_dpi_context(hwnd):
+    """Use physical coordinates on this thread; never change the target app."""
+    try:
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        set_context = user32.SetThreadDpiAwarenessContext
+    except (AttributeError, OSError) as error:
+        raise b.KakaoError('대상 창의 DPI 좌표계를 사용할 수 없는 Windows 버전입니다.') from error
+    set_context.argtypes = [wintypes.HANDLE]
+    set_context.restype = wintypes.HANDLE
+    # A raw awareness-context handle from another process can be rejected when
+    # that process has a different cached system DPI. Per-monitor V2 gives us
+    # physical coordinates; explicit point conversion below uses the HWND's DPI.
+    previous = set_context(ctypes.c_void_p(-4).value)
+    if not previous:
+        raise b.KakaoError('호출 스레드의 DPI 컨텍스트를 변경하지 못했습니다.')
+    try:
+        yield
+    finally:
+        if not set_context(previous):
+            raise b.KakaoError('호출 스레드의 이전 DPI 컨텍스트를 복원하지 못했습니다.')
+
+
+def _physical_to_native_point(hwnd, coordinates):
+    """Convert a physical screen point into the target process's coordinates."""
+    try:
+        convert = ctypes.WinDLL('user32', use_last_error=True).PhysicalToLogicalPointForPerMonitorDPI
+    except (AttributeError, OSError) as error:
+        raise b.KakaoError('대상 창의 DPI 좌표 변환 API를 사용할 수 없습니다.') from error
+    convert.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+    convert.restype = wintypes.BOOL
+    point = wintypes.POINT(*coordinates)
+    if not convert(hwnd, ctypes.byref(point)):
+        raise b.KakaoError('대상 창의 DPI 좌표 변환에 실패했습니다.')
+    return point.x, point.y
+
+
+def _native_window_rect(hwnd):
+    """Return window bounds in the coordinate space used inside the target."""
+    with _window_dpi_context(hwnd):
+        left, top, right, bottom = b.win32gui.GetWindowRect(hwnd)
+        first = _physical_to_native_point(hwnd, (left, top))
+        last = _physical_to_native_point(hwnd, (right, bottom))
+        return (*first, *last)
+
+
+def _native_client_size(hwnd):
+    """Return client dimensions matching the target process's mouse messages."""
+    with _window_dpi_context(hwnd):
+        left, top, right, bottom = b.win32gui.GetClientRect(hwnd)
+        first = _physical_to_native_point(hwnd, b.win32gui.ClientToScreen(hwnd, (left, top)))
+        last = _physical_to_native_point(hwnd, b.win32gui.ClientToScreen(hwnd, (right, bottom)))
+        width, height = last[0]-first[0], last[1]-first[1]
+        if width <= 0 or height <= 0:
+            raise b.KakaoError('대상 창의 DPI 클라이언트 크기가 유효하지 않습니다.')
+        return width, height
+
+
 def _capture(hwnd, destination):
+    with _window_dpi_context(hwnd):
+        return _capture_in_context(hwnd, destination)
+
+
+def _capture_in_context(hwnd, destination):
     """PrintWindow captures the selected window without changing foreground."""
     from PIL import Image
     import win32ui
-    left, top, right, bottom = b.win32gui.GetWindowRect(hwnd)
+    left, top, right, bottom = _native_window_rect(hwnd)
     width, height = right-left, bottom-top
     if width <= 0 or height <= 0:
         raise b.KakaoError('캡처 대상 창의 크기가 유효하지 않습니다.')
@@ -106,6 +171,85 @@ def _capture(hwnd, destination):
     return [left, top, right, bottom]
 
 
+@contextmanager
+def _rendered_window(hwnd):
+    """Keep one Kakao window rendered for a complete background operation."""
+    with _window_dpi_context(hwnd):
+        with _rendered_window_in_context(hwnd):
+            yield
+
+
+@contextmanager
+def _rendered_window_in_context(hwnd):
+    gui = b.win32gui
+    process = b._window_process(hwnd)
+    if process is None:
+        raise b.KakaoError('캡처 대상의 카카오톡 프로세스를 확인하지 못했습니다.')
+    foreground = gui.GetForegroundWindow()
+    visible, iconic = bool(gui.IsWindowVisible(hwnd)), bool(gui.IsIconic(hwnd))
+    placement, original_rect = gui.GetWindowPlacement(hwnd), gui.GetWindowRect(hwnd)
+    temporary_render = not visible or iconic
+    # A hidden maximized window cannot be restored using ShowWindow(3) without
+    # requesting activation. Leave that uncommon state untouched.
+    if temporary_render and placement[1] == b.win32con.SW_SHOWMAXIMIZED:
+        raise b.KakaoError('숨겨진 최대화 창을 활성화 없이 복원할 수 없어 캡처하지 않았습니다.')
+    changed = False
+
+    def require_same_target():
+        if b._window_process(hwnd) != process:
+            raise b.KakaoError('캡처 중 대상 카카오톡 프로세스가 바뀌었습니다.')
+        if gui.GetForegroundWindow() != foreground:
+            raise b.KakaoError('캡처 중 전경 창이 바뀌어 결과를 사용하지 않았습니다.')
+
+    try:
+        if temporary_render:
+            normal = placement[4] if iconic else original_rect
+            width, height = normal[2] - normal[0], normal[3] - normal[1]
+            if width <= 0 or height <= 0:
+                raise b.KakaoError('숨겨진 캡처 대상 창의 복원 크기가 유효하지 않습니다.')
+            changed = True
+            gui.ShowWindow(hwnd, b.win32con.SW_HIDE)
+            gui.SetWindowPos(hwnd, 0, -32000, -32000, width, height,
+                             b.win32con.SWP_NOACTIVATE | b.win32con.SWP_NOZORDER)
+            gui.ShowWindow(hwnd, b.win32con.SW_SHOWNOACTIVATE)
+            gui.SetWindowPos(hwnd, 0, -32000, -32000, width, height,
+                             b.win32con.SWP_NOACTIVATE | b.win32con.SWP_NOZORDER)
+        gui.RedrawWindow(hwnd, None, None, 0x185)
+        time.sleep(.25)
+        require_same_target()
+        yield
+    finally:
+        if changed:
+            if b._window_process(hwnd) != process:
+                raise b.KakaoError('캡처 대상이 바뀌어 이전 창의 상태를 복원하지 않았습니다.')
+            try:
+                gui.ShowWindow(hwnd, b.win32con.SW_HIDE)
+                restore_command = b.win32con.SW_SHOWMINNOACTIVE if iconic else b.win32con.SW_HIDE
+                gui.SetWindowPlacement(hwnd, (placement[0], restore_command, *placement[2:]))
+                if not iconic:
+                    left, top, right, bottom = original_rect
+                    gui.SetWindowPos(hwnd, 0, left, top, right-left, bottom-top,
+                                     b.win32con.SWP_NOACTIVATE | b.win32con.SWP_NOZORDER)
+                if not visible:
+                    gui.ShowWindow(hwnd, b.win32con.SW_HIDE)
+            except b.WIN32_ERRORS as error:
+                raise b.KakaoError('캡처 후 카카오톡 창의 상태를 복원하지 못했습니다.') from error
+        require_same_target()
+
+
+def _capture_rendered(hwnd, destination):
+    """Capture one rendered window and remove an unsafe newly created output."""
+    destination = Path(destination)
+    existed = destination.exists()
+    try:
+        with _rendered_window(hwnd):
+            return _capture(hwnd, destination)
+    except BaseException:
+        if not existed and destination.is_file():
+            destination.unlink()
+        raise
+
+
 def capture_room(room, *, output=None, scroll=None):
     window = _room(room)
     dialogs = _save_dialogs(window)
@@ -121,7 +265,7 @@ def capture_room(room, *, output=None, scroll=None):
     if destination.exists():
         raise b.KakaoError('캡처 출력 파일이 이미 존재합니다.')
     foreground = b.win32gui.GetForegroundWindow()
-    rect = _capture(hwnd, destination)
+    rect = _capture_rendered(hwnd, destination)
     return {'room': window.title, 'path': str(destination), 'rect': rect,
             'background': True, 'foreground_unchanged': foreground == b.win32gui.GetForegroundWindow(),
             'save_dialog_open': bool(dialogs), 'window': hex(hwnd)}

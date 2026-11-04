@@ -10,7 +10,8 @@ try {
   const modulePath = require.resolve('frida', {paths: [process.argv[2] || process.cwd()]});
   const frida = await import(pathToFileURL(modulePath).href);
   session = await frida.attach(request.pid);
-  const source = fs.readFileSync(new URL('./background_agent.js', import.meta.url), 'utf8');
+  const source = fs.readFileSync(new URL('./win32_abi.js', import.meta.url), 'utf8') + '\n' +
+    fs.readFileSync(new URL('./background_agent.js', import.meta.url), 'utf8');
   script = await session.createScript('const config = '+JSON.stringify(request)+';\n'+source);
   let timer;
   const completion = new Promise(resolve => {

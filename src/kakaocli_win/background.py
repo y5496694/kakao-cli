@@ -11,10 +11,21 @@ from . import backend as b
 
 
 def _runtime():
-    node = os.environ.get('KAKAOCLI_REA_NODE') or ('D:/Codex/tools/node-v24.22.1/node.exe' if Path('D:/Codex/tools/node-v24.22.1/node.exe').is_file() else shutil.which('node'))
-    entry = os.environ.get('KAKAOCLI_REA_ENTRY','D:/Codex/tools/rea-6.8.0/node_modules/rea-agents/scripts/rea.mjs')
-    if not node or not Path(entry).is_file():
-        raise b.KakaoError('백그라운드 런타임이 없습니다. REA/Frida를 설치하고 KAKAOCLI_REA_NODE와 KAKAOCLI_REA_ENTRY를 설정하세요.')
+    bundled_node = Path.home() / '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe'
+    node = os.environ.get('KAKAOCLI_REA_NODE') or shutil.which('node')
+    if not node and bundled_node.is_file():
+        node = str(bundled_node)
+    entry = os.environ.get('KAKAOCLI_REA_ENTRY')
+    if not entry:
+        roots = [Path(__file__).resolve().parents[2], Path.cwd()]
+        candidates = [root / relative for root in roots for relative in (
+            'work/rea/node_modules/rea-agents/scripts/rea.mjs',
+            'tools/rea/node_modules/rea-agents/scripts/rea.mjs',
+            'node_modules/rea-agents/scripts/rea.mjs',
+        )]
+        entry = next((str(path) for path in candidates if path.is_file()), None)
+    if not node or not entry or not Path(entry).is_file():
+        raise b.KakaoError('백그라운드 런타임이 없습니다. install.ps1 -InstallRea를 실행하거나 KAKAOCLI_REA_NODE와 KAKAOCLI_REA_ENTRY를 설정하세요.')
     return node, str(Path(entry).resolve().parents[1])
 
 
@@ -72,33 +83,58 @@ def ensure_room(room, *, exact=True):
 
 def resolve_room(query):
     """Resolve the rendered search row before opening it; never guess a recipient."""
-    from .attachments import _capture
+    from .attachments import _capture_rendered, _rendered_window
     from .windows_ocr import ocr_image, WindowsOcrError
-    probe=run_action(query,'search-probe',query=query)
-    tmp_root=Path('D:/Codex/tmp') if Path('D:/Codex/tmp').is_dir() else None
-    previous=probe['previous_search']
-    try:
-        with tempfile.TemporaryDirectory(prefix='kakao-search-',dir=tmp_root) as folder:
-            path=Path(folder)/'results.png'
-            _capture(int(probe['main'],16),path)
-            observation=ocr_image(path)
-        normalized=lambda value: ''.join(value.casefold().split())
-        candidates=[]
-        for line in observation['lines']:
-            words=[w for w in line['words'] if 55<=w['x']<observation['width']-65]
-            title=' '.join(w['text'] for w in words).strip()
-            if words and normalized(query) in normalized(title):
-                left=min(w['x'] for w in words);top=min(w['y'] for w in words)
-                right=max(w['x']+w['width'] for w in words);bottom=max(w['y']+w['height'] for w in words)
-                if top>=60:candidates.append({'title':title,'point':[(left+right)/2,(top+bottom)/2]})
-        if len(candidates)!=1:
-            raise b.KakaoError('검색 결과에서 이름을 하나로 식별하지 못했습니다. 정확한 표시 이름을 지정하세요. 후보: '+', '.join(c['title'] for c in candidates))
-        candidate=candidates[0]
-        return run_action(query,'open-selected',query=query,expected_title=candidate['title'],point=candidate['point'])
-    except WindowsOcrError as exc:
-        raise b.KakaoError('백그라운드 검색 결과를 읽지 못했습니다: '+str(exc)) from exc
-    finally:
-        run_action(query,'search-probe',query=previous)
+    from PIL import Image
+    main = b.find_main_window()
+    if not main:
+        raise b.KakaoError('카카오톡 메인 창을 찾지 못했습니다.')
+    with _rendered_window(main.hwnd):
+        probe=run_action(query,'search-probe',query=query)
+        tmp_root=Path('D:/Codex/tmp') if Path('D:/Codex/tmp').is_dir() else None
+        previous=probe['previous_search']
+        try:
+            with tempfile.TemporaryDirectory(prefix='kakao-search-',dir=tmp_root) as folder:
+                path=Path(folder)/'results.png'
+                _capture_rendered(int(probe['main'],16),path)
+                ocr_path=Path(folder)/'results-ocr.png'
+                with Image.open(path) as picture:
+                    scale=min(2.0, 2500/max(picture.size))
+                    size=tuple(max(1, round(value*scale)) for value in picture.size)
+                    picture.resize(size, Image.Resampling.LANCZOS).save(ocr_path)
+                observation=ocr_image(ocr_path)
+            normalized=lambda value: ''.join(value.casefold().split())
+            candidates=[]
+            bounds = probe.get('result_bounds')
+            render_size = probe.get('render_size')
+            if bounds is not None:
+                if (not isinstance(bounds, (list, tuple)) or len(bounds) != 4
+                        or not isinstance(render_size, (list, tuple)) or len(render_size) != 2
+                        or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (*bounds, *render_size))
+                        or min(render_size) <= 0 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]):
+                    raise b.KakaoError('검색 결과 목록의 화면 영역을 검증하지 못했습니다.')
+                scale_x, scale_y = observation['width'] / render_size[0], observation['height'] / render_size[1]
+                bounds = [bounds[0]*scale_x, bounds[1]*scale_y, bounds[2]*scale_x, bounds[3]*scale_y]
+            for line in observation['lines']:
+                if bounds is None:
+                    words=[w for w in line['words'] if 55<=w['x']<observation['width']-65]
+                else:
+                    words=[w for w in line['words'] if bounds[0] <= w['x']+w['width']/2 < bounds[2]
+                           and bounds[1] <= w['y']+w['height']/2 < bounds[3]]
+                title=' '.join(w['text'] for w in words).strip()
+                if words and normalized(query) in normalized(title):
+                    left=min(w['x'] for w in words);top=min(w['y'] for w in words)
+                    right=max(w['x']+w['width'] for w in words);bottom=max(w['y']+w['height'] for w in words)
+                    if bounds is not None or top>=60:candidates.append({'title':title,'point':[(left+right)/2,(top+bottom)/2]})
+            if len(candidates)!=1:
+                raise b.KakaoError('검색 결과에서 이름을 하나로 식별하지 못했습니다. 정확한 표시 이름을 지정하세요. 후보: '+', '.join(c['title'] for c in candidates))
+            candidate=candidates[0]
+            return run_action(query,'open-selected',query=query,expected_title=candidate['title'],point=candidate['point'],
+                              capture_size=[observation['width'], observation['height']])
+        except WindowsOcrError as exc:
+            raise b.KakaoError('백그라운드 검색 결과를 읽지 못했습니다: '+str(exc)) from exc
+        finally:
+            run_action(query,'search-probe',query=previous)
 
 
 def read_visible(room, *, exact=True, timeout=1.5):
