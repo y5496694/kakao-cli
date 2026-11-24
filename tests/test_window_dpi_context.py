@@ -134,7 +134,8 @@ def test_rendered_window_keeps_target_dpi_context_for_entire_lifetime(dpi_api, m
     original = state['current']
     events = []
     @contextmanager
-    def rendered(hwnd):
+    def rendered(hwnd, *, offscreen):
+        assert offscreen
         assert state['current'] == state['target']
         events.append('render')
         try:

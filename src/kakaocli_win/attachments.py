@@ -172,15 +172,15 @@ def _capture_in_context(hwnd, destination):
 
 
 @contextmanager
-def _rendered_window(hwnd):
+def _rendered_window(hwnd, *, offscreen=True):
     """Keep one Kakao window rendered for a complete background operation."""
     with _window_dpi_context(hwnd):
-        with _rendered_window_in_context(hwnd):
+        with _rendered_window_in_context(hwnd, offscreen=offscreen):
             yield
 
 
 @contextmanager
-def _rendered_window_in_context(hwnd):
+def _rendered_window_in_context(hwnd, *, offscreen):
     gui = b.win32gui
     process = b._window_process(hwnd)
     if process is None:
@@ -207,13 +207,13 @@ def _rendered_window_in_context(hwnd):
             width, height = normal[2] - normal[0], normal[3] - normal[1]
             if width <= 0 or height <= 0:
                 raise b.KakaoError('숨겨진 캡처 대상 창의 복원 크기가 유효하지 않습니다.')
+            left, top = (-32000, -32000) if offscreen else normal[:2]
+            flags = b.win32con.SWP_NOACTIVATE | b.win32con.SWP_NOZORDER
             changed = True
             gui.ShowWindow(hwnd, b.win32con.SW_HIDE)
-            gui.SetWindowPos(hwnd, 0, -32000, -32000, width, height,
-                             b.win32con.SWP_NOACTIVATE | b.win32con.SWP_NOZORDER)
+            gui.SetWindowPos(hwnd, 0, left, top, width, height, flags)
             gui.ShowWindow(hwnd, b.win32con.SW_SHOWNOACTIVATE)
-            gui.SetWindowPos(hwnd, 0, -32000, -32000, width, height,
-                             b.win32con.SWP_NOACTIVATE | b.win32con.SWP_NOZORDER)
+            gui.SetWindowPos(hwnd, 0, left, top, width, height, flags)
         gui.RedrawWindow(hwnd, None, None, 0x185)
         time.sleep(.25)
         require_same_target()

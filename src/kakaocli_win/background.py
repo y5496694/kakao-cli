@@ -83,13 +83,26 @@ def ensure_room(room, *, exact=True):
 
 def resolve_room(query):
     """Resolve the rendered search row before opening it; never guess a recipient."""
-    from .attachments import _capture_rendered, _rendered_window
-    from .windows_ocr import ocr_image, WindowsOcrError
-    from PIL import Image
     main = b.find_main_window()
     if not main:
         raise b.KakaoError('카카오톡 메인 창을 찾지 못했습니다.')
-    with _rendered_window(main.hwnd):
+    result = _resolve_rendered_room(query, main.hwnd, offscreen=True)
+    if result is not None:
+        return result
+    if not main.visible or b.win32gui.IsIconic(main.hwnd):
+        # Some Kakao builds leave the list blank when the main window is offscreen.
+        result = _resolve_rendered_room(query, main.hwnd, offscreen=False)
+        if result is not None:
+            return result
+    raise b.KakaoError('검색 결과에서 일치하는 채팅방 후보를 찾지 못했습니다. 표시 이름을 확인하세요.')
+
+
+def _resolve_rendered_room(query, hwnd, *, offscreen):
+    from PIL import Image
+    from .attachments import _capture_rendered, _rendered_window
+    from .windows_ocr import ocr_image, WindowsOcrError
+
+    with _rendered_window(hwnd, offscreen=offscreen):
         probe=run_action(query,'search-probe',query=query)
         tmp_root=Path('D:/Codex/tmp') if Path('D:/Codex/tmp').is_dir() else None
         previous=probe['previous_search']
@@ -126,6 +139,11 @@ def resolve_room(query):
                     left=min(w['x'] for w in words);top=min(w['y'] for w in words)
                     right=max(w['x']+w['width'] for w in words);bottom=max(w['y']+w['height'] for w in words)
                     if bounds is not None or top>=60:candidates.append({'title':title,'point':[(left+right)/2,(top+bottom)/2]})
+            if not candidates:
+                return None
+            exact_matches = [candidate for candidate in candidates
+                             if normalized(candidate['title']) == normalized(query)]
+            candidates = exact_matches or candidates
             if len(candidates)!=1:
                 raise b.KakaoError('검색 결과에서 이름을 하나로 식별하지 못했습니다. 정확한 표시 이름을 지정하세요. 후보: '+', '.join(c['title'] for c in candidates))
             candidate=candidates[0]

@@ -11,8 +11,9 @@ from kakaocli_win import backend as b, background as bg
 @pytest.fixture
 def rendered_search(monkeypatch):
     from kakaocli_win import attachments
-    monkeypatch.setattr(b, 'find_main_window', lambda: SimpleNamespace(hwnd=1))
-    monkeypatch.setattr(attachments, '_rendered_window', lambda hwnd: nullcontext())
+    monkeypatch.setattr(b, 'find_main_window', lambda: SimpleNamespace(hwnd=1, visible=True))
+    monkeypatch.setattr(b, 'win32gui', SimpleNamespace(IsIconic=lambda hwnd: False))
+    monkeypatch.setattr(attachments, '_rendered_window', lambda hwnd, *, offscreen: nullcontext())
 
 
 def test_runtime_keeps_message_out_of_command_arguments(monkeypatch):
@@ -40,12 +41,17 @@ def test_canonical_search_result_is_verified(monkeypatch):
         bg.ensure_room('Example')
 
 
-def test_search_ambiguity_never_opens_row(monkeypatch, rendered_search):
+@pytest.mark.parametrize('titles', [
+    ('Example A', 'Example B'),
+    ('Example', 'Example', 'Example B'),
+])
+def test_search_ambiguity_never_opens_row(monkeypatch, rendered_search, titles):
     from kakaocli_win import attachments, windows_ocr
     from PIL import Image
     monkeypatch.setattr(attachments, '_capture_rendered', lambda hwnd, path: Image.new('RGB', (400, 600)).save(path))
     line = lambda text, y: {'words': [{'text': text, 'x': 100, 'y': y, 'width': 100, 'height': 15}]}
-    monkeypatch.setattr(windows_ocr, 'ocr_image', lambda _: {'width': 400, 'height': 600, 'lines': [line('Example A', 100), line('Example B', 160)]})
+    lines = [line(title, y=100 + index * 60) for index, title in enumerate(titles)]
+    monkeypatch.setattr(windows_ocr, 'ocr_image', lambda _: {'width': 400, 'height': 600, 'lines': lines})
     calls = []
     def action(room, op, **kwargs):
         calls.append((op, kwargs))
@@ -57,7 +63,7 @@ def test_search_ambiguity_never_opens_row(monkeypatch, rendered_search):
     assert calls[-1][1]['query'] == 'old'
 
 
-def test_search_uses_doubled_ocr_and_excludes_search_box(monkeypatch, rendered_search):
+def test_search_prefers_exact_title_and_excludes_search_box(monkeypatch, rendered_search):
     from kakaocli_win import attachments, windows_ocr
     from PIL import Image
     monkeypatch.setattr(attachments, '_capture_rendered', lambda hwnd, path: Image.new('RGB', (400, 600)).save(path))
@@ -67,7 +73,8 @@ def test_search_uses_doubled_ocr_and_excludes_search_box(monkeypatch, rendered_s
         with Image.open(path) as picture:
             assert picture.size == (800, 1200)
         return {'width': 800, 'height': 1200,
-                'lines': [line('Example', 200, 120), line('Example', 200, 400)]}
+                'lines': [line('Example', 200, 120), line('Example Group', 200, 340),
+                          line('Example', 200, 400), line('Another Example', 200, 460)]}
     monkeypatch.setattr(windows_ocr, 'ocr_image', ocr)
     calls = []
     def action(room, operation, **kwargs):
@@ -79,6 +86,7 @@ def test_search_uses_doubled_ocr_and_excludes_search_box(monkeypatch, rendered_s
     monkeypatch.setattr(bg, 'run_action', action)
     assert bg.resolve_room('Example') == {'title': 'Example', 'hwnd': '0x2'}
     selected = next(kwargs for operation, kwargs in calls if operation == 'open-selected')
+    assert selected['expected_title'] == 'Example'
     assert selected['point'] == [250, 415]
     assert selected['capture_size'] == [800, 1200]
 

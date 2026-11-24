@@ -132,22 +132,29 @@ def test_visible_window_capture_does_not_move_or_hide_window(window_environment,
     assert state.calls == [('redraw',)]
 
 
-@pytest.mark.parametrize('ocr_failure', [False, True])
-def test_search_keeps_minimized_main_rendered_until_previous_search_restored(window_environment, monkeypatch, ocr_failure):
+@pytest.mark.parametrize('visible, iconic, outcome', [
+    (True, True, 'offscreen'),
+    (True, True, 'ocr_failure'),
+    (True, True, 'onscreen'),
+    (False, False, 'onscreen'),
+    (False, False, 'no_match'),
+])
+def test_search_restores_window_and_previous_query(window_environment, monkeypatch, visible, iconic, outcome):
     from PIL import Image
     from kakaocli_win import background as bg, windows_ocr
-    state = window_environment(visible=True, iconic=True)
-    original_placement = state.placement
-    monkeypatch.setattr(b, 'find_main_window', lambda: SimpleNamespace(hwnd=100))
+    state = window_environment(visible=visible, iconic=iconic)
+    original_placement, original_rect = state.placement, state.rect
+    monkeypatch.setattr(b, 'find_main_window', lambda: SimpleNamespace(hwnd=100, visible=visible))
     calls = []
+    offscreen_rect = (-32000, -32000, -31500, -31300)
 
     def assert_rendered():
         assert state.visible and not state.iconic
-        assert state.rect == (-32000, -32000, -31500, -31300)
+        assert state.rect in (offscreen_rect, state.normal)
 
     def action(room, operation, **kwargs):
         assert_rendered()
-        calls.append((operation, kwargs))
+        calls.append((operation, state.rect, kwargs))
         if operation == 'search-probe':
             return {'main': '0x64', 'previous_search': 'old',
                     'render_size': [500, 700], 'result_bounds': [80, 150, 480, 650]}
@@ -160,25 +167,37 @@ def test_search_keeps_minimized_main_rendered_until_previous_search_restored(win
 
     def ocr(path):
         assert_rendered()
-        if ocr_failure:
+        if outcome == 'ocr_failure':
             raise windows_ocr.WindowsOcrError('synthetic OCR failure')
-        return {'width': 1000, 'height': 1400, 'lines': [
-            {'words': [{'text': 'Example', 'x': 200, 'y': 400, 'width': 200, 'height': 30}]},
-        ]}
+        has_match = outcome == 'offscreen' or (outcome == 'onscreen' and state.rect == state.normal)
+        line = {'words': [{'text': 'Example', 'x': 200, 'y': 400, 'width': 200, 'height': 30}]}
+        return {'width': 1000, 'height': 1400, 'lines': [line] if has_match else []}
 
     monkeypatch.setattr(bg, 'run_action', action)
     monkeypatch.setattr(a, '_capture', capture)
     monkeypatch.setattr(windows_ocr, 'ocr_image', ocr)
-    if ocr_failure:
+    if outcome == 'ocr_failure':
         with pytest.raises(b.KakaoError, match='synthetic OCR failure'):
+            bg.resolve_room('Example')
+    elif outcome == 'no_match':
+        with pytest.raises(b.KakaoError, match='후보'):
             bg.resolve_room('Example')
     else:
         assert bg.resolve_room('Example') == {'title': 'Example', 'hwnd': '0x65'}
-    assert state.visible and state.iconic
+    assert (state.visible, state.iconic) == (visible, iconic)
     assert state.placement == original_placement
+    if not iconic:
+        assert state.rect == original_rect
     assert state.foreground == 200
-    assert calls[0] == ('search-probe', {'query': 'Example'})
-    assert calls[-1] == ('search-probe', {'query': 'old'})
-    if not ocr_failure:
-        assert calls[1][0] == 'open-selected'
-        assert calls[1][1]['capture_size'] == [1000, 1400]
+    attempts = [offscreen_rect, state.normal] if outcome in ('onscreen', 'no_match') else [offscreen_rect]
+    assert [(rect, kwargs['query']) for op, rect, kwargs in calls if op == 'search-probe'] == [
+        (rect, query) for rect in attempts for query in ('Example', 'old')
+    ]
+    opened = [(rect, kwargs) for op, rect, kwargs in calls if op == 'open-selected']
+    if outcome in ('offscreen', 'onscreen'):
+        [(rect, selected)] = opened
+        assert rect == attempts[-1]
+        assert selected['capture_size'] == [1000, 1400]
+        assert calls[-2][0] == 'open-selected'
+    else:
+        assert not opened
